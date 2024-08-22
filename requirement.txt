@@ -1,0 +1,9 @@
+argparse
+os
+pathlib
+warnings
+
+napari
+numpy
+scikit-image
+qtpy
