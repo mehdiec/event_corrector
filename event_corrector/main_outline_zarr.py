@@ -913,14 +913,17 @@ class Segmenter:
 
 if __name__ == "__main__":
     import os
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("folder_path", type=str)
+    args = parser.parse_args()
 
     # Retrieve the environment variable
 
     viewer = napari.Viewer()
 
-    cell_widget = Segmenter(
-        viewer, "/Volumes/u934/equipe_bellaiche/m_ech-chouini/fast1_zarr"
-    )
+    cell_widget = Segmenter(viewer, args.folder_path)
 
     viewer.window.add_dock_widget(cell_widget.ui_widget)
 
