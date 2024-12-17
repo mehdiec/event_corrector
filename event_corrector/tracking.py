@@ -22,11 +22,30 @@ def run_remote_tracking(
     command = f"/home/nexton/miniforge-pypy3/envs/trackastra/bin/python {remote_script_path} {arg1} {arg2}"
     stdin, stdout, stderr = client.exec_command(command)
 
+    # Read and decode stdout/stderr while command executes
+    stdout_data = ""
+    stderr_data = ""
+    while not stdout.channel.exit_status_ready():
+        if stdout.channel.recv_ready():
+            stdout_data += stdout.channel.recv(1024).decode('utf-8')
+        if stderr.channel.recv_stderr_ready():
+            stderr_data += stderr.channel.recv_stderr(1024).decode('utf-8')
+    
+    # Get any remaining output
+    stdout_data += stdout.read().decode('utf-8')
+    stderr_data += stderr.read().decode('utf-8')
+
     exit_status = stdout.channel.recv_exit_status()
 
     if exit_status != 0:
         client.close()
-        raise RuntimeError(f"Error (exit code {exit_status}): {stderr.strip()}")
+        raise RuntimeError(f"Error (exit code {exit_status}): {stderr_data}")
+
+    print("Command output:")
+    print(stdout_data)
+    if stderr_data:
+        print("Error output:")
+        print(stderr_data)
 
     # Fetch the predictions file
     sftp = client.open_sftp()

@@ -28,8 +28,7 @@ from utils import (
     get_bounding_box_from_coords,
 )
 from binding import SegmenterBindings
-
-os.environ["QT_QPA_PLATFORM"] = "xcb"
+ 
 event_colors = {
     "divisions": "green",
     "delamination": "magenta",
