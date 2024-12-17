@@ -879,7 +879,7 @@ class Segmenter:
         """
         skimage.io.imsave(
             self.public_path / "image.tif",
-            self.image,
+            self.image[:,0],
         )
         self.create_labels()
 
