@@ -1,9 +1,7 @@
-argparse
-os
-pathlib
-warnings
-
 napari
 numpy
 scikit-image
 qtpy
+zarr
+PyQt5
+paramiko
