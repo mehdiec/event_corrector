@@ -32,7 +32,7 @@ def run_remote_tracking(
     sftp = client.open_sftp()
     path_public = os.environ.get("path_public")
     remote_pred_path = Path(arg1).parent / "pred.pkl"
-    local_pred_path = Path("/home/mehdi/Documents/temp/fast1/fast1_pred.pkl")
+    local_pred_path = Path(arg1).parent / f"{Path(arg1).stem}_pred.pkl"
 
     try:
         sftp.get(str(remote_pred_path), str(local_pred_path))
