@@ -20,5 +20,4 @@ class SegmenterBindings:
     update_outline_alt = "Shift-u"
     is_deletion_mode_activated = is_shift_pressed
     is_left_click_pressed = is_left_click_pressed
-    undo = "z"
     free_hand = "f"

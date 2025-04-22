@@ -60,12 +60,7 @@ def get_bounding_box_from_coords(coords, labels=None, shape= None):
 
 def get_bounding_box_from_labels(labels, touched_labels):
     """
-    Calculates the bounding box coordinates for a given list of coordinates.
-
-    Parameters
-    ----------
-    coords : List[Tuple[int, int]]
-        List of (y, x) coordinate tuples.
+    Calculates the bounding box coordinates for a given list of labels.
 
     Returns
     -------

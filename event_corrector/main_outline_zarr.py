@@ -7,7 +7,7 @@ import skimage.morphology
 from skimage.draw import line
 from tqdm import tqdm
 import zarr
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,8 +20,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QPushButton,
-    QDialogButtonBox,
-    QFileDialog,
 )
 import os
 from tracking import (
@@ -47,7 +45,6 @@ from functools import wraps
 
 from scipy.sparse import coo_matrix
 from skimage.measure import label as cc_label
-import glob
 
 
 def timing_decorator(func):
@@ -147,25 +144,6 @@ def _intersection_over_union(masks_true, masks_pred):
     iou = overlap / (n_pixels_pred + n_pixels_true - overlap)
     iou[np.isnan(iou)] = 0.0
     return iou
-
-# Make polygon valid by removing self-intersections and fixing topology
-def _interpolate_polygon(vertices, num_points_per_edge):
-    """
-    Given a list of vertices (x, y), interpolate additional points along each edge.
-    """
-    verts = np.asarray(vertices, dtype=np.float32)
-    new_pts = []
-    # On boucle de 0 à len(vertices)-2, pour chaque arête v[i]→v[i+1]
-    for i in range(len(verts)-1):
-        p1, p2 = verts[i], verts[i + 1]
-        # endpoint=False pour ne pas dupliquer p2 ici
-        interp = np.linspace(p1, p2, num_points_per_edge, endpoint=False)
-        new_pts.extend(interp.tolist())
-        # on ajoute p2 manuellement pour conserver le sommet
-        new_pts.append(p2.tolist())
-    return np.array(new_pts, dtype=np.float32)
-
-
 
 @timing_decorator
 def _label_overlap(x, y):
@@ -310,14 +288,14 @@ class SegmenterUI(QWidget):
         self.tracking_event_group_box = QGroupBox("Display Tracking event")
         self.export_results_group_box = QGroupBox("Export Results")
         self.graph_group_box = QGroupBox("Graph")
-        self.file_mode_group_box = QGroupBox("Segmentation type")
+        self.folder_mode_group_box = QGroupBox("Segmentation type")
 
         self.cell_traking_box_layout = QVBoxLayout(self.cell_tracking_group_box)
         self.tracking_box_layout = QVBoxLayout(self.tracking_event_group_box)
         self.general_draw_parameter = QVBoxLayout(self.draw_parameter_group_box)
         self.export_results_layout = QVBoxLayout(self.export_results_group_box)
         self.graph_group = QVBoxLayout(self.graph_group_box)
-        self.file_mode_layout = QVBoxLayout(self.file_mode_group_box)
+        self.folder_mode_layout = QVBoxLayout(self.folder_mode_group_box)
 
         self.plotting_group_box = QGroupBox("Time Evolution Parameters")
 
@@ -388,21 +366,18 @@ class SegmenterUI(QWidget):
         # Additional setup
         self._show_widget_cell_tracking()
 
-        # Ton widget de navigation
-        self.choose_file_type = QComboBox()
-        self.file_mode_layout.addWidget(self.choose_file_type)
-        layout.addWidget(self.file_mode_group_box)
-
+        # Widget to choose a specific folder for segmentation
+        self.choose_folder_type = QComboBox()
+        self.folder_mode_layout.addWidget(self.choose_folder_type)
+        layout.addWidget(self.folder_mode_group_box)
+        
         self.current_folder = QLabel("")
         layout.addWidget(self.current_folder)
 
-        # Charge les sous-dossiers
+        # Subfolders of the animal.image.D2 available
         self.load_subfolders(path_D2)
-
-        # Connecte le signal
-        self.choose_file_type.currentTextChanged.connect(self.on_selection_changed)
-
-
+        self.choose_folder_type.currentTextChanged.connect(self.on_selection_changed)
+        
         # self.cell_traking_box_layout.addLayout(self.cell_traking_box_layout)
         layout.addWidget(self.draw_parameter_group_box)
         layout.addWidget(self.cell_tracking_group_box)
@@ -414,19 +389,21 @@ class SegmenterUI(QWidget):
         self.lower_bound = 0
     
     def load_subfolders(self, path):
+        """Load subfolders to put them in the combo box"""
 
         sub_keys = list(path.keys())
 
-        self.choose_file_type.clear()
-        self.choose_file_type.addItems(sub_keys)
+        self.choose_folder_type.clear()
+        self.choose_folder_type.addItems(sub_keys)
 
         if "label" in sub_keys:
-            index = self.choose_file_type.findText("label")
+            index = self.choose_folder_type.findText("label")
             if index >= 0:
-                self.choose_file_type.setCurrentIndex(index)
+                self.choose_folder_type.setCurrentIndex(index)
                 self.current_folder.setText("Currently working on label")
 
     def on_selection_changed(self, folder_name):
+        """Current folder changed"""
         self.current_folder.setText(f"Currently working on {folder_name}")
 
     def clear_figure(self):
@@ -628,30 +605,12 @@ class Segmenter:
         self.public_path = Path(os.environ.get("path_public"))
         self.image = self.animal.IMAGE.D2.raw
         self.path_D2 = self.animal.IMAGE.D2
-        self.folder_type = "label"  
+        self.folder_type = "label"  #default folder
     
         self.labels_original = self.path_D2[self.folder_type]
         self.labels = self.labels_original[:].copy()
-        # self.labels_original = self.animal.IMAGE.D2.label
-        # self.labels = self.animal.IMAGE.D2.label[:].copy()
-
-
-        # if f"{self.folder_type}_backup" not in self.path_D2:
-        #     print("No back-up found, creating one ...")
-        #     self.animal.IMAGE.D2.create_dataset(
-        #         name=f"{self.folder_type}_backup",
-        #         shape=self.labels.shape,
-        #         dtype="uint8",
-        #         chunks=(1, *self.labels.shape[1:]),
-        #     )
-        # backup_label = self.path_D2[f"{self.folder_type}_backup"]
-
-        # for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating back up"):
-        #     if np.any(backup_label[t]):  
-        #         continue
-        #     backup_label[t] = self.path_D2[self.folder_type][t].copy()
-
-
+        
+        # TO CHECK (changement de self.labels -> check if what is below is still doing what it is supposed to)
         self.cell_lineage = None
         self.viewer: napari.Viewer = viewer
 
@@ -686,28 +645,11 @@ class Segmenter:
         )
 
         self.labels_layer = self.viewer.add_labels(self.labels, name=self.folder_type)
-        # self.labels_layer = self.viewer.add_labels((self.labels), name="labels")
 
-        # # Checking for existing skeleton and creating empty if not
-        # if f"{self.folder_type}_skeleton" not in self.path_D2:
-        #     print(f"{self.folder_type} skeleton not found in Zarr — generating outlines...")
-        #     self.path_D2.create_dataset(
-        #         name=f"{self.folder_type}_skeleton",
-        #         shape=self.labels.shape,
-        #         dtype="uint8",
-        #         chunks=(1, *self.labels.shape[1:]),
-        #     )
-
-        # self.skeleton_store = self.path_D2[f"{self.folder_type}_skeleton"]
-
-        # #creating skeleton from labels if skeleton empty
-        # for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating skeleton"):
-        #     if np.any(self.skeleton_store[t]):  
-        #         continue
-        #     skeleton = masks_to_outlines(self.labels[t]).astype(np.uint8)
-        #     self.skeleton_store[t] = skeleton
-
+        # Saving a back up of the initial labels
         self.ensure_backup_exists()
+
+        # Creating or getting a back up of the outlines of the initial labels
         self.ensure_skeleton_exists()
 
         skeleton_zarr = self.skeleton_store[:].copy() 
@@ -738,7 +680,6 @@ class Segmenter:
         # Bind callback methods to mouse and key events
         self.viewer.mouse_move_callbacks.append(self.segmenting)
         self.viewer.mouse_drag_callbacks.append(self.toggle_segmenting)
-        self.viewer.mouse_drag_callbacks.append(self.segmenting)
         self.viewer.mouse_drag_callbacks.append(self.remove_label)
         self.viewer.mouse_drag_callbacks.append(self.display_graph)
 
@@ -747,7 +688,7 @@ class Segmenter:
             SegmenterBindings.cancel_drawing, self.clear_drawing, overwrite=True
         )
         self.viewer.bind_key(
-            SegmenterBindings.save_state, self.on_export_current_labels, overwrite=True
+            SegmenterBindings.save_state, self.save_current_segmentation, overwrite=True
         )
         self.viewer.bind_key(
             SegmenterBindings.update_outline,
@@ -759,7 +700,7 @@ class Segmenter:
             self.handle_sequential_mode,
             overwrite=True,
         )
-        self.viewer.bind_key("Control-Z", self.perform_undo, overwrite = True)
+        self.viewer.bind_key("Control-Z", self.perform_undo)
         self.viewer.bind_key("Control-Y", self.perform_redo)
         self.viewer.bind_key(
             SegmenterBindings.change_correcting_mode, self.switch_edition_mode, overwrite=True
@@ -782,9 +723,12 @@ class Segmenter:
 
         self.ui_widget.export_button.clicked.connect(self.save_current_segmentation)
 
-        self.ui_widget.choose_file_type.currentIndexChanged.connect(self.change_folder_mode)
+        self.ui_widget.choose_folder_type.currentIndexChanged.connect(self.change_folder_mode)
 
     def ensure_backup_exists(self):
+        """
+        Create a back up of the labels if not existing
+        """
         if f"{self.folder_type}_backup" not in self.path_D2:
             print("No back-up found, creating one ...")
             self.animal.IMAGE.D2.create_dataset(
@@ -800,6 +744,9 @@ class Segmenter:
             backup_label[t] = self.labels[t].copy()
 
     def ensure_skeleton_exists(self):
+        """
+        Get the outlines saved or create them if not existing
+        """
         if f"{self.folder_type}_skeleton" not in self.path_D2:
             print(f"{self.folder_type} skeleton not found in Zarr — generating outlines...")
             self.path_D2.create_dataset(
@@ -816,11 +763,14 @@ class Segmenter:
             self.skeleton_store[t] = skeleton
 
     def change_folder_mode(self):
+        """
+        Change the current folder of labels
+        """
         # Change folder_type based on the current selection and clear existing layers
-        self.folder_type = self.ui_widget.choose_file_type.currentText()
+        self.folder_type = self.ui_widget.choose_folder_type.currentText()
         print(f"current zarr: {self.folder_type}")
         
-        # Remove any existing layers related to folder_type and outlines
+        # Remove any existing layers related to the selected folder_type and outlines
         if self.folder_type in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[self.folder_type])
         outlines_name = f"outlines_{self.folder_type}"
@@ -1077,9 +1027,9 @@ class Segmenter:
         - outlines.data: Updates the drawn outlines data based on detected intersections.
         """
 
-        # If the segmenting mode is activated, we update the shape layer at all times
+        # If the removing mode (shift + right click) is activated
         if SegmenterBindings.is_deletion_mode_activated():
-            # Drawing a circle around the click for it to be bigger
+            # Drawing a circle around the click for it to be bigger and touched both labels
             if event.button == 2:
                 x, y = event.position[1:]
                 radius = 2  
@@ -1170,6 +1120,7 @@ class Segmenter:
     def update_outline(self, bounding_box):
         if len(self.drawing.data[0]) > 0:
 
+            # If the removing mode (shift + right click) is activated
             if SegmenterBindings.is_deletion_mode_activated():
 
                 coords_arr = np.array(self.drawing.data[0], dtype=int)  
@@ -1184,15 +1135,17 @@ class Segmenter:
                 for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
 
                     label_values = self.labels_layer.data[i][ys_valid, xs_valid]
-
+                    # Each unique labels
                     uniques, counts = np.unique(label_values, return_counts=True)
-
+                    # We take only the top 2 in case the drawing overflow or is on a error solo pixel
                     top2_idx   = np.argsort(counts)[::-1][:2]
 
                     top2_labels = uniques[top2_idx]
+
                     if top2_labels.size !=2:
                         continue
                     
+                    # If the background is in the two labels, the bounding box is around the drawing
                     if 0 in top2_labels:
                         top2_labels = top2_labels[top2_labels != 0]
                         y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
@@ -1203,9 +1156,10 @@ class Segmenter:
                                 )
                         y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
                         x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                        #We need 0 (background) to be at the end of the list
                         top2_labels = [top2_labels[0], 0]
 
-
+                    #If there is only labels and no background, the bounding box is around the labels
                     else:
                         y_min, y_max, x_min, x_max = get_bounding_box_from_labels(self.labels_layer.data[i], top2_labels)
 
@@ -1226,9 +1180,12 @@ class Segmenter:
                     local_ys = ys - offset_y + padding
                     local_xs = xs - offset_x + padding
 
+
                     new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
+                    # Padding with background to avoid problems at the border of the bounding box
                     new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
 
+                    # Every pixel with the first label get the relabeled with the second
                     new_slice_padded[new_slice_padded == top2_labels[0]] = top2_labels[1]
                     self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]=new_slice_padded[padding:-padding, padding:-padding]
 
@@ -1246,13 +1203,11 @@ class Segmenter:
                     )
             
             else:
-
-                # new_coords = _interpolate_polygon(self.drawing.data[0],10000)
-                # coords_arr = np.array(new_coords, dtype=int)  
                 coords = np.array(self.drawing.data[0], dtype=int)
 
                 ys_all, xs_all = [], []
 
+                # Creates a line between the points of the drawing
                 for (y0, x0), (y1, x1) in zip(coords[:-1], coords[1:]):
                     rr, cc = line(y0, x0, y1, x1)
                     ys_all.extend(rr)
@@ -1260,9 +1215,6 @@ class Segmenter:
 
                 ys = np.array(ys_all)
                 xs = np.array(xs_all)
-
-                # ys = coords_arr[:, 0]
-                # xs = coords_arr[:, 1]
                 shape = self.labels_layer.data[0].shape
                 h, w = shape
                 valid = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w)
@@ -1272,40 +1224,22 @@ class Segmenter:
                 for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
 
                     label_values = self.labels_layer.data[i][ys_valid, xs_valid]
+                  
+                    label_values_unique = np.unique(label_values)
 
-                    n_pts = label_values.size
-
-                    n_zero = np.count_nonzero(label_values == 0)
-
-                    if n_zero > n_pts / 2:
-                        label_values_unique = np.unique(label_values)
-
-                        y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
-                        x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
-                        if label_values_unique[label_values_unique!=0].size !=0:
-                            y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
-                                    self.labels_layer.data[i],
-                                    label_values_unique[label_values_unique!=0]
-                                )
-                            y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
-                            x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
-                        else:
-                            y_min, y_max = y_min_draw, y_max_draw
-                            x_min, x_max = x_min_draw, x_max_draw
-                        
-                    else:
-                        label_values_unique = np.unique(label_values[label_values != 0])
-                        if label_values_unique.size == 0:
-                            y_min, y_max = ys_valid.min(), ys_valid.max()
-                            x_min, x_max = xs_valid.min(), xs_valid.max()
-                        else:
-                            y_min, y_max, x_min, x_max = get_bounding_box_from_labels(
+                    # Bounding box is defined by the drawing and the labels touched (except background)
+                    y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
+                    x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
+                    if label_values_unique[label_values_unique!=0].size !=0:
+                        y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
                                 self.labels_layer.data[i],
-                                label_values_unique
+                                label_values_unique[label_values_unique!=0]
                             )
-                    # label_values_unique = np.unique(label_values[label_values != 0])
-
-                    # y_min, y_max, x_min, x_max = get_bounding_box_from_labels(self.labels_layer.data[i], label_values_unique)
+                        y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
+                        x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                    else:
+                        y_min, y_max = y_min_draw, y_max_draw
+                        x_min, x_max = x_min_draw, x_max_draw
 
                     before = self.labels_layer.data[
                         i,
@@ -1325,9 +1259,12 @@ class Segmenter:
                     local_xs = xs - offset_x + padding
 
                     new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
+                    # Padding with background to avoid problems at the border of the bounding box
                     new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
+                    # Get a label id unused
                     new_id = self.labels_layer.data[i].max() + 1
 
+                    # For each label touched, if it is entirely cut by the drawing -> 1 new label on only one side of the drawing, the other is untouched
                     for label in label_values_unique:
                         region  = (new_slice_padded == label)
                         barrier = np.zeros_like(region)
@@ -1374,6 +1311,9 @@ class Segmenter:
         self.labels_original = self.labels_layer.data
         
     def save_current_segmentation(self):
+        """
+        Save the current state of the labels and the outlines
+        """
         self.labels_original[:] = self.labels_layer.data
         self.skeleton_store[:] = self.outlines_layer.data
         print("segmentation exported")
@@ -1538,104 +1478,6 @@ class Segmenter:
                     )
                     self.outlines_layer.refresh()
                     print("History updated and display refreshed")
-
-class FileBrowserWidget(QWidget):
-    """
-    A widget for browsing and selecting folders within a directory structure.
-
-    This widget provides a graphical interface to navigate through directories,
-    display sub-folders, and allows users to select multiple sub-folders using checkboxes.
-    """
-
-    checkboxes_clicked_signal = Signal(list)
-
-    def __init__(self, folder_path=os.path.expanduser("~")):
-        super(QWidget, self).__init__()
-        self.layout = QHBoxLayout(self)
-
-        print(folder_path)
-
-        self.file_dialog = QFileDialog()
-        self.file_dialog.setWindowFlags(Qt.Widget)
-        self.file_dialog.setModal(False)
-        self.file_dialog.setOption(QFileDialog.DontUseNativeDialog)
-        self.file_dialog.setFileMode(QFileDialog.Directory)  # Set to directory mode
-        self.file_dialog.setDirectory(folder_path)  # Set to user's home directory
-
-        # Remove open and cancel button from widget
-        self.buttonBox = self.file_dialog.findChild(QDialogButtonBox, "buttonBox")
-        if self.buttonBox:  # Check if buttonBox exists
-            self.buttonBox.clear()
-
-        self.layout.addWidget(self.file_dialog)
-        self.file_dialog.currentChanged.connect(self.on_folder_selection)
-
-        self.directory_input = self.file_dialog.findChild(QLineEdit)
-        if self.directory_input:
-            self.directory_input.returnPressed.connect(self.capture_input_directory)
-
-        # List of possible folders to click
-        self.checkboxes = []
-        self.layout_for_checkboxes = QVBoxLayout()
-        # self.layout.addLayout(self.layout_for_checkboxes)
-
-    def load_folders(self):
-        # Set the path for the analysis
-        self.project_folder_path = Path(self.folder_path)
-
-        # Get the list of sub-folders in the project folder
-        sub_folders = self.get_sub_folders(self.project_folder_path)
-
-        return sub_folders
-
-    def get_sub_folders(self, project_folder_path):
-        # Use glob to find all items in the project folder
-        all_items = glob.glob(f"{project_folder_path}/*")
-
-        # Filter out files, keep only sub-folders
-        return [
-            os.path.basename(folder) for folder in all_items if os.path.isdir(folder)
-        ]
-
-    def capture_input_directory(self):
-        self.folder_path = self.directory_input.text()
-
-        sub_folder = self.load_folders()
-        self.update_checkboxes(sub_folder)
-
-    def on_folder_selection(self, folderpath):
-        self.folder_path = folderpath
-        sub_folder = self.load_folders()
-        self.update_checkboxes(sub_folder)
-
-    def update_checkboxes(self, sub_folders):
-        # Clear existing checkboxes
-        for checkbox in self.checkboxes:
-            checkbox.deleteLater()
-        self.checkboxes.clear()
-
-        # Create new checkboxes
-        for folder in sub_folders:
-            checkbox = QCheckBox(folder)
-            self.layout_for_checkboxes.addWidget(checkbox)
-            self.checkboxes.append(checkbox)
-            checkbox.stateChanged.connect(self.update_selected_list)
-
-    def update_selected_list(self):
-        selected_folders = [cb.text() for cb in self.checkboxes if cb.isChecked()]
-        self.checkboxes_clicked_signal.emit(selected_folders)
-
-    # def prepare_and_display_plot(self, node):
-    #     # Plotting
-    #     self.ui_widget.fig, self.ui_widget.ax = plot_subgraph(
-    #         self.cell_lineage,
-    #         node,
-    #         depth=2,
-    #         time_depth=2,
-    #         relation="both",
-    #         plot_future_edges=False,
-    #     )
-
 
 if __name__ == "__main__":
     import os
