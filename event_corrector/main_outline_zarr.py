@@ -4,9 +4,10 @@ from pathlib import Path
 import napari
 import numpy as np
 import skimage.morphology
+from skimage.draw import line
 from tqdm import tqdm
 import zarr
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,40 +20,34 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QPushButton,
+    QDialogButtonBox,
+    QFileDialog,
 )
 import os
-import networkx as nx
 from tracking import (
+    label_events,
     relabel_image,
     run_remote_tracking,
     prediction_to_cell_lineage,
-    label_events,
 )
 from utils import (
-    create_outline_from_mask,
     masks_to_outlines,
     plot_subgraph,
-    process_seg_array,
     get_bounding_box_from_coords,
+    get_bounding_box_from_labels
 )
-from skimage.draw import polygon
-from skimage.measure import regionprops
 from binding import SegmenterBindings
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from scipy.ndimage import binary_dilation
-from pathlib import Path
 
-import numpy as np
 import skimage.io
-import torch
-from numba import jit
-from tqdm import tqdm
 import time
 from functools import wraps
 
 from scipy.sparse import coo_matrix
+from skimage.measure import label as cc_label
+import glob
 
 
 def timing_decorator(func):
@@ -152,6 +147,24 @@ def _intersection_over_union(masks_true, masks_pred):
     iou = overlap / (n_pixels_pred + n_pixels_true - overlap)
     iou[np.isnan(iou)] = 0.0
     return iou
+
+# Make polygon valid by removing self-intersections and fixing topology
+def _interpolate_polygon(vertices, num_points_per_edge):
+    """
+    Given a list of vertices (x, y), interpolate additional points along each edge.
+    """
+    verts = np.asarray(vertices, dtype=np.float32)
+    new_pts = []
+    # On boucle de 0 à len(vertices)-2, pour chaque arête v[i]→v[i+1]
+    for i in range(len(verts)-1):
+        p1, p2 = verts[i], verts[i + 1]
+        # endpoint=False pour ne pas dupliquer p2 ici
+        interp = np.linspace(p1, p2, num_points_per_edge, endpoint=False)
+        new_pts.extend(interp.tolist())
+        # on ajoute p2 manuellement pour conserver le sommet
+        new_pts.append(p2.tolist())
+    return np.array(new_pts, dtype=np.float32)
+
 
 
 @timing_decorator
@@ -256,7 +269,7 @@ class HistoryManager:
 
 
 class SegmenterUI(QWidget):
-    def __init__(self, viewer: napari.Viewer) -> None:
+    def __init__(self, viewer: napari.Viewer, path_D2) -> None:
         """
         Initialize the Segmenter class with configurations for GUI and key bindings.
 
@@ -297,12 +310,14 @@ class SegmenterUI(QWidget):
         self.tracking_event_group_box = QGroupBox("Display Tracking event")
         self.export_results_group_box = QGroupBox("Export Results")
         self.graph_group_box = QGroupBox("Graph")
+        self.file_mode_group_box = QGroupBox("Segmentation type")
 
         self.cell_traking_box_layout = QVBoxLayout(self.cell_tracking_group_box)
         self.tracking_box_layout = QVBoxLayout(self.tracking_event_group_box)
         self.general_draw_parameter = QVBoxLayout(self.draw_parameter_group_box)
         self.export_results_layout = QVBoxLayout(self.export_results_group_box)
         self.graph_group = QVBoxLayout(self.graph_group_box)
+        self.file_mode_layout = QVBoxLayout(self.file_mode_group_box)
 
         self.plotting_group_box = QGroupBox("Time Evolution Parameters")
 
@@ -373,6 +388,21 @@ class SegmenterUI(QWidget):
         # Additional setup
         self._show_widget_cell_tracking()
 
+        # Ton widget de navigation
+        self.choose_file_type = QComboBox()
+        self.file_mode_layout.addWidget(self.choose_file_type)
+        layout.addWidget(self.file_mode_group_box)
+
+        self.current_folder = QLabel("")
+        layout.addWidget(self.current_folder)
+
+        # Charge les sous-dossiers
+        self.load_subfolders(path_D2)
+
+        # Connecte le signal
+        self.choose_file_type.currentTextChanged.connect(self.on_selection_changed)
+
+
         # self.cell_traking_box_layout.addLayout(self.cell_traking_box_layout)
         layout.addWidget(self.draw_parameter_group_box)
         layout.addWidget(self.cell_tracking_group_box)
@@ -382,6 +412,22 @@ class SegmenterUI(QWidget):
 
         self.upper_bound = 0
         self.lower_bound = 0
+    
+    def load_subfolders(self, path):
+
+        sub_keys = list(path.keys())
+
+        self.choose_file_type.clear()
+        self.choose_file_type.addItems(sub_keys)
+
+        if "label" in sub_keys:
+            index = self.choose_file_type.findText("label")
+            if index >= 0:
+                self.choose_file_type.setCurrentIndex(index)
+                self.current_folder.setText("Currently working on label")
+
+    def on_selection_changed(self, folder_name):
+        self.current_folder.setText(f"Currently working on {folder_name}")
 
     def clear_figure(self):
         """Creates a canvas widget if not already created, draws the plot, and optionally saves it."""
@@ -581,8 +627,31 @@ class Segmenter:
 
         self.public_path = Path(os.environ.get("path_public"))
         self.image = self.animal.IMAGE.D2.raw
+        self.path_D2 = self.animal.IMAGE.D2
+        self.folder_type = "label"  
+    
+        self.labels_original = self.path_D2[self.folder_type]
+        self.labels = self.labels_original[:].copy()
+        # self.labels_original = self.animal.IMAGE.D2.label
+        # self.labels = self.animal.IMAGE.D2.label[:].copy()
 
-        self.labels = self.animal.IMAGE.D2.label
+
+        # if f"{self.folder_type}_backup" not in self.path_D2:
+        #     print("No back-up found, creating one ...")
+        #     self.animal.IMAGE.D2.create_dataset(
+        #         name=f"{self.folder_type}_backup",
+        #         shape=self.labels.shape,
+        #         dtype="uint8",
+        #         chunks=(1, *self.labels.shape[1:]),
+        #     )
+        # backup_label = self.path_D2[f"{self.folder_type}_backup"]
+
+        # for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating back up"):
+        #     if np.any(backup_label[t]):  
+        #         continue
+        #     backup_label[t] = self.path_D2[self.folder_type][t].copy()
+
+
         self.cell_lineage = None
         self.viewer: napari.Viewer = viewer
 
@@ -616,21 +685,41 @@ class Segmenter:
             channel_axis=1,
         )
 
-        self.labels_layer = self.viewer.add_labels((self.labels), name="labels")
-        skeleton = np.zeros_like(self.labels)
-        # for t in tqdm(range(self.labels.shape[0]), desc="Generating outlines"):
-        #     skeleton[t] = masks_to_outlines(self.labels[t])
-        self.outlines_layer = self.viewer.add_labels((skeleton), name="outlines")
-        self.outlines_layer_temp = self.viewer.add_labels(
-            skeleton.copy(), name="outlines_temp"
-        )
+        self.labels_layer = self.viewer.add_labels(self.labels, name=self.folder_type)
+        # self.labels_layer = self.viewer.add_labels((self.labels), name="labels")
 
+        # # Checking for existing skeleton and creating empty if not
+        # if f"{self.folder_type}_skeleton" not in self.path_D2:
+        #     print(f"{self.folder_type} skeleton not found in Zarr — generating outlines...")
+        #     self.path_D2.create_dataset(
+        #         name=f"{self.folder_type}_skeleton",
+        #         shape=self.labels.shape,
+        #         dtype="uint8",
+        #         chunks=(1, *self.labels.shape[1:]),
+        #     )
+
+        # self.skeleton_store = self.path_D2[f"{self.folder_type}_skeleton"]
+
+        # #creating skeleton from labels if skeleton empty
+        # for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating skeleton"):
+        #     if np.any(self.skeleton_store[t]):  
+        #         continue
+        #     skeleton = masks_to_outlines(self.labels[t]).astype(np.uint8)
+        #     self.skeleton_store[t] = skeleton
+
+        self.ensure_backup_exists()
+        self.ensure_skeleton_exists()
+
+        skeleton_zarr = self.skeleton_store[:].copy() 
+
+        self.outlines_layer = self.viewer.add_labels(skeleton_zarr, name=f"outlines_{self.folder_type}")
+     
         self.viewer = viewer
         self.drawing_is_active = None
         self.history = []
         self.shape = "Free Hand"
 
-        self.ui_widget = SegmenterUI(viewer)
+        self.ui_widget = SegmenterUI(viewer, self.path_D2)
 
         self.slider_pos = int(self.viewer.dims.point[0])
         self.drawing = self.viewer.add_shapes(
@@ -670,10 +759,10 @@ class Segmenter:
             self.handle_sequential_mode,
             overwrite=True,
         )
-        self.viewer.bind_key("Control-Z", self.perform_undo)
+        self.viewer.bind_key("Control-Z", self.perform_undo, overwrite = True)
         self.viewer.bind_key("Control-Y", self.perform_redo)
         self.viewer.bind_key(
-            SegmenterBindings.free_hand, self.switch_edition_mode, overwrite=True
+            SegmenterBindings.change_correcting_mode, self.switch_edition_mode, overwrite=True
         )
 
         self.ui_widget.checkbox_multiple_modif.stateChanged.connect(
@@ -691,7 +780,69 @@ class Segmenter:
         self.ui_widget.button_cell_tracking.clicked.connect(self.run_cell_tracking)
         self.ui_widget.button_cell_event.clicked.connect(self.visualize_tracking_events)
 
-        self.ui_widget.export_button.clicked.connect(self.on_export_current_labels)
+        self.ui_widget.export_button.clicked.connect(self.save_current_segmentation)
+
+        self.ui_widget.choose_file_type.currentIndexChanged.connect(self.change_folder_mode)
+
+    def ensure_backup_exists(self):
+        if f"{self.folder_type}_backup" not in self.path_D2:
+            print("No back-up found, creating one ...")
+            self.animal.IMAGE.D2.create_dataset(
+                name=f"{self.folder_type}_backup",
+                shape=self.labels.shape,
+                dtype="uint8",
+                chunks=(1, *self.labels.shape[1:]),
+            )
+        backup_label = self.path_D2[f"{self.folder_type}_backup"]
+        for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating back up"):
+            if np.any(backup_label[t]):
+                continue
+            backup_label[t] = self.labels[t].copy()
+
+    def ensure_skeleton_exists(self):
+        if f"{self.folder_type}_skeleton" not in self.path_D2:
+            print(f"{self.folder_type} skeleton not found in Zarr — generating outlines...")
+            self.path_D2.create_dataset(
+                name=f"{self.folder_type}_skeleton",
+                shape=self.labels.shape,
+                dtype="uint8",
+                chunks=(1, *self.labels.shape[1:]),
+            )
+        self.skeleton_store = self.path_D2[f"{self.folder_type}_skeleton"]
+        for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating skeleton"):
+            if np.any(self.skeleton_store[t]):
+                continue
+            skeleton = masks_to_outlines(self.labels[t]).astype(np.uint8)
+            self.skeleton_store[t] = skeleton
+
+    def change_folder_mode(self):
+        # Change folder_type based on the current selection and clear existing layers
+        self.folder_type = self.ui_widget.choose_file_type.currentText()
+        print(f"current zarr: {self.folder_type}")
+        
+        # Remove any existing layers related to folder_type and outlines
+        if self.folder_type in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[self.folder_type])
+        outlines_name = f"outlines_{self.folder_type}"
+        if outlines_name in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[outlines_name])
+
+        # Load the labels associated with the selected folder_type
+        self.labels_original = self.animal.IMAGE.D2[self.folder_type]
+        self.labels = self.animal.IMAGE.D2[self.folder_type][:].copy()
+        self.labels_layer = self.viewer.add_labels(self.labels, name=self.folder_type)
+
+        # Ensure the backup exists before proceeding
+        self.ensure_backup_exists()
+
+        # Check if skeleton exists and load it if available
+        self.ensure_skeleton_exists()
+        skeleton_zarr = self.skeleton_store[:].copy()  # Retrieve the skeleton data
+        self.outlines_layer = self.viewer.add_labels(skeleton_zarr, name=outlines_name)
+
+        # Refresh both the labels and outlines layers to update the viewer
+        self.labels_layer.refresh()
+        self.outlines_layer.refresh()
 
     def clean_state(self):
         """Removes layers from viewer"""
@@ -804,9 +955,10 @@ class Segmenter:
         """
 
         if event.button == 2:
+
             if self.drawing_is_active:
                 self.drawing_is_active = False
-
+                print("toggle")
                 # Automatic mode : we add/remove the outlines instantaneously and clear the drawing
                 if self.edition_mode == "automatic":
                     self.handle_sequential_mode()
@@ -853,13 +1005,14 @@ class Segmenter:
         state = self.history_manager.undo()
         if state:
             self.apply_state(state, undo=True)
+        print("stop nothing to undo")
 
     def perform_redo(self, viewer):
         state = self.history_manager.redo()
         if state:
             self.apply_state(state, undo=False)
             return
-        print("stop nothing to undo")
+        print("stop nothing to redo")
 
     def apply_state(self, state, undo=False):
         # Apply changes from the state
@@ -925,12 +1078,30 @@ class Segmenter:
         """
 
         # If the segmenting mode is activated, we update the shape layer at all times
-        if self.drawing_is_active:
-            if self.shape == "Free Hand":
-                # if self.drawing_is_active:
-                #     # This draws the line
-                self.segmenting_path += [event.position[1:]]
+        if SegmenterBindings.is_deletion_mode_activated():
+            # Drawing a circle around the click for it to be bigger
+            if event.button == 2:
+                x, y = event.position[1:]
+                radius = 2  
+                num_points = 20  
+
+                theta = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+                circle_points = [(x + radius * np.cos(t), y + radius * np.sin(t)) for t in theta]
+                self.segmenting_path += circle_points
                 self.drawing.data = [self.segmenting_path]
+                self.drawing_is_active = False
+                self.drawing.refresh()
+                self.labels_layer.refresh()
+                self.outlines_layer.refresh()
+                self.handle_sequential_mode()
+                self.clear_drawing()
+
+        elif self.drawing_is_active:
+            if self.shape == "Free Hand":
+                if self.drawing_is_active:
+                    # This draws the line
+                    self.segmenting_path += [event.position[1:]]
+                    self.drawing.data = [self.segmenting_path]
                 if not self.drawing.shape_type == "path":
                     self.drawing.shape_type = "path"
                 # Set edge width to 2 pixels for thicker path
@@ -994,201 +1165,200 @@ class Segmenter:
             return
 
         self.update_outline(bounding_box)
-        self.update_labels()
 
     @timing_decorator
     def update_outline(self, bounding_box):
         if len(self.drawing.data[0]) > 0:
-            # Get bounding box coordinates
-            y_min, y_max, x_min, x_max = get_bounding_box_from_coords(
-                self.drawing.data[0]
-            )
 
-            # Calculate boundaries for cropping
-            y_min_bound = max([0, y_min - bounding_box])
-            y_max_bound = min(
-                [self.outlines_layer.data[0].shape[0] - 1, y_max + bounding_box]
-            )
-            x_min_bound = max([0, x_min - bounding_box])
-            x_max_bound = min(
-                [self.outlines_layer.data[0].shape[1] - 1, x_max + bounding_box]
-            )
+            if SegmenterBindings.is_deletion_mode_activated():
 
-            # Convert drawing to labels
-            full_line = self.drawing.to_labels(
-                labels_shape=self.outlines_layer.data[0].shape
-            )
-            full_line_subarray = full_line[
-                y_min_bound : y_max_bound + 1, x_min_bound : x_max_bound + 1
-            ].astype(bool)
+                coords_arr = np.array(self.drawing.data[0], dtype=int)  
+                ys = coords_arr[:, 0]
+                xs = coords_arr[:, 1]
+                shape = self.labels_layer.data[0].shape
+                h, w = shape
+                valid = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w)
+                ys_valid = ys[valid]
+                xs_valid = xs[valid]
 
-            # Store current state in history
-            self.history.append(
-                [
-                    self.outlines_layer.data[
-                        self.ui_widget.lower_change : self.ui_widget.upper_change,
-                        y_min_bound + 5 : y_max_bound - 5 + 1,
-                        x_min_bound + 5 : x_max_bound - 5 + 1,
-                    ].copy(),
-                    (self.ui_widget.lower_change, self.ui_widget.upper_change),
-                    (y_min_bound, y_max_bound),
-                    (x_min_bound, x_max_bound),
-                ]
-            )
+                for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
 
-            # Loop through slices of the 3D image stack
-            for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
-                outline_slice = self.outlines_layer.data[
-                    i, y_min_bound : y_max_bound + 1, x_min_bound : x_max_bound + 1
-                ].astype(bool)
-                full_line_subarray = binary_dilation(
-                    full_line_subarray, structure=np.ones((2, 2))
-                )
+                    label_values = self.labels_layer.data[i][ys_valid, xs_valid]
 
-                # Merge drawing and outline based on mode
-                if SegmenterBindings.is_deletion_mode_activated():
-                    merged_subarray = ~full_line_subarray & outline_slice
-                else:
-                    merged_subarray = full_line_subarray | outline_slice
+                    uniques, counts = np.unique(label_values, return_counts=True)
 
-                # Apply padding and remove small holes
-                padded_subarray = np.pad(
-                    merged_subarray, pad_width=50, mode="constant", constant_values=True
-                )
-                padded_subarray = 255 * skimage.morphology.remove_small_holes(
-                    padded_subarray, 10
-                )
+                    top2_idx   = np.argsort(counts)[::-1][:2]
 
-                # Perform watershed segmentation
-                watershed_canvas = skimage.segmentation.watershed(
-                    padded_subarray, watershed_line=False
-                )
-                # watershed_canvas = binary_dilation(
-                #     watershed_canvas, structure=np.ones((2, 2))
-                # )
+                    top2_labels = uniques[top2_idx]
+                    if top2_labels.size !=2:
+                        continue
+                    
+                    if 0 in top2_labels:
+                        top2_labels = top2_labels[top2_labels != 0]
+                        y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
+                        x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
+                        y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
+                                    self.labels_layer.data[i],
+                                    top2_labels
+                                )
+                        y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
+                        x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                        top2_labels = [top2_labels[0], 0]
 
-                watershed_canvas = watershed_canvas.astype(np.uint8) * 255
 
-                # Crop to original size
-                original_watershed = watershed_canvas[55:-55, 55:-55]
+                    else:
+                        y_min, y_max, x_min, x_max = get_bounding_box_from_labels(self.labels_layer.data[i], top2_labels)
 
-                # Update the original 3D image stack
-                self.outlines_layer.data[
-                    i,
-                    y_min_bound + 5 : y_max_bound - 5 + 1,
-                    x_min_bound + 5 : x_max_bound - 5 + 1,
-                ] = masks_to_outlines(original_watershed)
+                    before = self.labels_layer.data[
+                        i,
+                        y_min : y_max + 1,
+                        x_min : x_max + 1
+                    ].copy()
 
-                current_slice = self.labels_layer.data[
-                    i,
-                    y_min_bound + 5 : y_max_bound - 5 + 1,
-                    x_min_bound + 5 : x_max_bound - 5 + 1,
-                ]
-                stacked_array = np.stack([current_slice, original_watershed], axis=0)
+                    padding = 2
 
-                stitched_array = stitch3D(stacked_array)
+                    valid = (ys >= y_min) & (ys <= y_max+1) & (xs >= x_min) & (xs <= x_max+1)
+                    ys = ys[valid]
+                    xs = xs[valid]
+                    
+                    offset_y = y_min 
+                    offset_x = x_min
+                    local_ys = ys - offset_y + padding
+                    local_xs = xs - offset_x + padding
 
-                self.labels_layer.data[
-                    i,
-                    y_min_bound + 5 : y_max_bound - 5 + 1,
-                    x_min_bound + 5 : x_max_bound - 5 + 1,
-                ] = stitched_array[1]
-                after = self.labels_layer.data[
-                    self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
-                ].copy()
-                # self.history_manager.add_state(
-                #     new_label, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
-                # )
-                self.masks = self.labels_layer.data
+                    new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
+                    new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
 
-            # Early closure detection for polygon
+                    new_slice_padded[new_slice_padded == top2_labels[0]] = top2_labels[1]
+                    self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]=new_slice_padded[padding:-padding, padding:-padding]
+
+                    new_outlines = masks_to_outlines(self.labels_layer.data[i])
+                    self.outlines_layer.data[i]= new_outlines
+
+                    after = self.labels_layer.data[
+                            i,
+                            y_min : y_max + 1,
+                            x_min : x_max + 1
+                        ].copy()
+                    
+                    self.history_manager.add_state(
+                        0, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
+                    )
+            
+            else:
+
+                # new_coords = _interpolate_polygon(self.drawing.data[0],10000)
+                # coords_arr = np.array(new_coords, dtype=int)  
+                coords = np.array(self.drawing.data[0], dtype=int)
+
+                ys_all, xs_all = [], []
+
+                for (y0, x0), (y1, x1) in zip(coords[:-1], coords[1:]):
+                    rr, cc = line(y0, x0, y1, x1)
+                    ys_all.extend(rr)
+                    xs_all.extend(cc)
+
+                ys = np.array(ys_all)
+                xs = np.array(xs_all)
+
+                # ys = coords_arr[:, 0]
+                # xs = coords_arr[:, 1]
+                shape = self.labels_layer.data[0].shape
+                h, w = shape
+                valid = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w)
+                ys_valid = ys[valid]
+                xs_valid = xs[valid]
+                
+                for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
+
+                    label_values = self.labels_layer.data[i][ys_valid, xs_valid]
+
+                    n_pts = label_values.size
+
+                    n_zero = np.count_nonzero(label_values == 0)
+
+                    if n_zero > n_pts / 2:
+                        label_values_unique = np.unique(label_values)
+
+                        y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
+                        x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
+                        if label_values_unique[label_values_unique!=0].size !=0:
+                            y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
+                                    self.labels_layer.data[i],
+                                    label_values_unique[label_values_unique!=0]
+                                )
+                            y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
+                            x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                        else:
+                            y_min, y_max = y_min_draw, y_max_draw
+                            x_min, x_max = x_min_draw, x_max_draw
+                        
+                    else:
+                        label_values_unique = np.unique(label_values[label_values != 0])
+                        if label_values_unique.size == 0:
+                            y_min, y_max = ys_valid.min(), ys_valid.max()
+                            x_min, x_max = xs_valid.min(), xs_valid.max()
+                        else:
+                            y_min, y_max, x_min, x_max = get_bounding_box_from_labels(
+                                self.labels_layer.data[i],
+                                label_values_unique
+                            )
+                    # label_values_unique = np.unique(label_values[label_values != 0])
+
+                    # y_min, y_max, x_min, x_max = get_bounding_box_from_labels(self.labels_layer.data[i], label_values_unique)
+
+                    before = self.labels_layer.data[
+                        i,
+                        y_min : y_max + 1,
+                        x_min : x_max + 1
+                    ].copy()
+
+                    padding = 2
+
+                    valid = (ys >= y_min) & (ys <= y_max+1) & (xs >= x_min) & (xs <= x_max+1)
+                    ys = ys[valid]
+                    xs = xs[valid]
+                    
+                    offset_y = y_min 
+                    offset_x = x_min
+                    local_ys = ys - offset_y + padding
+                    local_xs = xs - offset_x + padding
+
+                    new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
+                    new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
+                    new_id = self.labels_layer.data[i].max() + 1
+
+                    for label in label_values_unique:
+                        region  = (new_slice_padded == label)
+                        barrier = np.zeros_like(region)
+                        barrier[local_ys, local_xs] = True
+                        mask_cut = region & (~barrier)
+                        comps = cc_label(mask_cut, connectivity=1)
+                        if comps.max() < 2:
+                            print("No cut detected")
+
+                        new_slice_padded[comps == 2] = new_id
+                        new_id += 1
+                    
+                    self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding:-padding]
+                    new_outlines = masks_to_outlines(self.labels_layer.data[i])
+                    self.outlines_layer.data[i]= new_outlines
+
+                    after = self.labels_layer.data[
+                            i,
+                            y_min : y_max + 1,
+                            x_min : x_max + 1
+                        ].copy()
+                    self.history_manager.add_state(
+                        0, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
+                    )
+        
+        self.masks = self.labels_layer.data
+
         # Early closure detection for polygon
         self.outlines_layer.refresh()
         self.labels_layer.refresh()
-        print("outlining")
         pass
-
-    def update_labels(self):
-        """ """
-        return
-        self.labels_layer
-        if len(self.drawing.data[0]) > 0:
-            # Get bounding box coordinates
-            self.slider_pos = int(self.viewer.dims.point[0])
-
-            # Process the slice currently in view
-            current_slice = self.labels_layer.data[self.slider_pos]
-
-            # Create a mask of the drawn area as labels
-            coords_y, coords_x = zip(*self.drawing.data[0])
-            coords_y = list(coords_y)
-            coords_x = list(coords_x)
-            y_min, y_max, x_min, x_max = get_bounding_box_from_coords(
-                (self.drawing.data[0])
-            )
-            # coords_y = np.array(coords_y, dtype=np.int32)
-            # coords_x = np.array(coords_x, dtype=np.int32)
-
-            # Early closure detection: find a point close to the starting point to determine closure
-            start_pt = np.array([coords_y[0], coords_x[0]])
-            search_radius = 50  # You can adjust this radius as needed
-            y_start, x_start = int(start_pt[0]), int(start_pt[1])
-
-            # Define a search region around the start point
-            y_min_search = max(y_start - search_radius, 0)
-            y_max_search = min(y_start + search_radius, current_slice.shape[0])
-            x_min_search = max(x_start - search_radius, 0)
-            x_max_search = min(x_start + search_radius, current_slice.shape[1])
-
-            region = current_slice[y_min_search:y_max_search, x_min_search:x_max_search]
-            non_zero_coords = np.argwhere(region > 0)
-
-            if non_zero_coords.size > 0:
-                # Find the closest labeled pixel to the start point
-                non_zero_coords_global = non_zero_coords + [y_min_search, x_min_search]
-                distances = np.sqrt(
-                    (non_zero_coords_global[:, 0] - start_pt[0]) ** 2
-                    + (non_zero_coords_global[:, 1] - start_pt[1]) ** 2
-                )
-                closest_idx = np.argmin(distances)
-                closest_coord = non_zero_coords_global[closest_idx]
-
-                # If the closest labeled pixel is within a certain threshold, use it to close the polygon
-                if distances[closest_idx] < 0.1:
-                    print(closest_coord)
-                    coords_y.append(closest_coord[0])
-                    coords_x.append(closest_coord[1])
-
-            # Create a mask of the drawn area as labels
-            rr, cc = polygon(coords_y, coords_x, current_slice.shape)
-
-            # Ensure unique label
-            new_label = current_slice.max() + 1
-
-            # Update only those places in the mask where there are no pre-existing labels
-            before = self.labels_layer.data[
-                self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
-            ].copy()
-            for r, c in zip(rr, cc):
-                if (
-                    current_slice[r, c] == 0
-                ):  # Only update where there's no pre-existing label
-                    current_slice[r, c] = new_label
-
-            # Update the whole labels layer data for the slice
-            self.labels_layer.data[self.slider_pos] = current_slice
-            after = self.labels_layer.data[
-                self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
-            ].copy()
-            self.history_manager.add_state(
-                new_label, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
-            )
-            self.masks = self.labels_layer.data
-            self.outlines_layer.data[self.slider_pos] = masks_to_outlines(
-                self.labels_layer.data[self.slider_pos]
-            )
-
-            self.labels_layer.refresh()
 
     # IO AND HISTORY RELATED
     def on_export_current_labels(self, napari_viewer=None):
@@ -1201,7 +1371,12 @@ class Segmenter:
         """
         Create the labels from the outlines and cell mask.
         """
-        self.labels = self.labels_layer.data
+        self.labels_original = self.labels_layer.data
+        
+    def save_current_segmentation(self):
+        self.labels_original[:] = self.labels_layer.data
+        self.skeleton_store[:] = self.outlines_layer.data
+        print("segmentation exported")
 
     def run_cell_tracking(self):
         """
@@ -1215,7 +1390,7 @@ class Segmenter:
 
         skimage.io.imsave(
             self.public_path / "labels.tif",
-            self.labels[:],
+            self.labels_original[:],
         )
 
         # Run tracking locally if we are nexton
@@ -1339,7 +1514,7 @@ class Segmenter:
 
                     # Store state before modification
                     before = self.labels_layer.data[
-                        self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
+                        self.slider_pos, y_min : y_max, x_min : x_max
                     ].copy()
 
                     # Update the data array directly
@@ -1349,7 +1524,7 @@ class Segmenter:
 
                     # Store state after modification
                     after = self.labels_layer.data[
-                        self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
+                        self.slider_pos, y_min : y_max, x_min : x_max
                     ].copy()
                     print("Label removed successfully")
 
@@ -1363,6 +1538,92 @@ class Segmenter:
                     )
                     self.outlines_layer.refresh()
                     print("History updated and display refreshed")
+
+class FileBrowserWidget(QWidget):
+    """
+    A widget for browsing and selecting folders within a directory structure.
+
+    This widget provides a graphical interface to navigate through directories,
+    display sub-folders, and allows users to select multiple sub-folders using checkboxes.
+    """
+
+    checkboxes_clicked_signal = Signal(list)
+
+    def __init__(self, folder_path=os.path.expanduser("~")):
+        super(QWidget, self).__init__()
+        self.layout = QHBoxLayout(self)
+
+        print(folder_path)
+
+        self.file_dialog = QFileDialog()
+        self.file_dialog.setWindowFlags(Qt.Widget)
+        self.file_dialog.setModal(False)
+        self.file_dialog.setOption(QFileDialog.DontUseNativeDialog)
+        self.file_dialog.setFileMode(QFileDialog.Directory)  # Set to directory mode
+        self.file_dialog.setDirectory(folder_path)  # Set to user's home directory
+
+        # Remove open and cancel button from widget
+        self.buttonBox = self.file_dialog.findChild(QDialogButtonBox, "buttonBox")
+        if self.buttonBox:  # Check if buttonBox exists
+            self.buttonBox.clear()
+
+        self.layout.addWidget(self.file_dialog)
+        self.file_dialog.currentChanged.connect(self.on_folder_selection)
+
+        self.directory_input = self.file_dialog.findChild(QLineEdit)
+        if self.directory_input:
+            self.directory_input.returnPressed.connect(self.capture_input_directory)
+
+        # List of possible folders to click
+        self.checkboxes = []
+        self.layout_for_checkboxes = QVBoxLayout()
+        # self.layout.addLayout(self.layout_for_checkboxes)
+
+    def load_folders(self):
+        # Set the path for the analysis
+        self.project_folder_path = Path(self.folder_path)
+
+        # Get the list of sub-folders in the project folder
+        sub_folders = self.get_sub_folders(self.project_folder_path)
+
+        return sub_folders
+
+    def get_sub_folders(self, project_folder_path):
+        # Use glob to find all items in the project folder
+        all_items = glob.glob(f"{project_folder_path}/*")
+
+        # Filter out files, keep only sub-folders
+        return [
+            os.path.basename(folder) for folder in all_items if os.path.isdir(folder)
+        ]
+
+    def capture_input_directory(self):
+        self.folder_path = self.directory_input.text()
+
+        sub_folder = self.load_folders()
+        self.update_checkboxes(sub_folder)
+
+    def on_folder_selection(self, folderpath):
+        self.folder_path = folderpath
+        sub_folder = self.load_folders()
+        self.update_checkboxes(sub_folder)
+
+    def update_checkboxes(self, sub_folders):
+        # Clear existing checkboxes
+        for checkbox in self.checkboxes:
+            checkbox.deleteLater()
+        self.checkboxes.clear()
+
+        # Create new checkboxes
+        for folder in sub_folders:
+            checkbox = QCheckBox(folder)
+            self.layout_for_checkboxes.addWidget(checkbox)
+            self.checkboxes.append(checkbox)
+            checkbox.stateChanged.connect(self.update_selected_list)
+
+    def update_selected_list(self):
+        selected_folders = [cb.text() for cb in self.checkboxes if cb.isChecked()]
+        self.checkboxes_clicked_signal.emit(selected_folders)
 
     # def prepare_and_display_plot(self, node):
     #     # Plotting
