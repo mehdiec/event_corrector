@@ -598,7 +598,7 @@ class Segmenter:
         elsewhere in the class. It configures sliders, text boxes, and key bindings for
         the segmentation interface.
         """
-
+        
         self.animal = zarr.open(animal_path)
         self.history_manager = HistoryManager()
 
@@ -606,13 +606,41 @@ class Segmenter:
         self.image = self.animal.IMAGE.D2.raw
         self.path_D2 = self.animal.IMAGE.D2
         self.folder_type = "label"  #default folder
-    
-        self.labels_original = self.path_D2[self.folder_type]
-        self.labels = self.labels_original[:].copy()
         
+        self.viewer: napari.Viewer = viewer
+        self.raw = self.viewer.add_image(
+            np.array(self.image),
+            name="raw",
+            channel_axis=1,
+        )
+
+
+        self.viewer = viewer
+        self.drawing_is_active = None
+        self.history = []
+        self.shape = "Free Hand"
+
+        
+
+        self.ui_widget = SegmenterUI(viewer, self.path_D2)
+
+        self.slider_pos = int(self.viewer.dims.point[0])
+        
+        self.edition_mode = "automatic"
+        self.complete_segmentation = {}
+
+        self.upper_bound = 0
+        self.lower_bound = 0
+        self._connect_widget()
+        
+
+        
+
+        self.change_segmentation_folder()
+
         # TO CHECK (changement de self.labels -> check if what is below is still doing what it is supposed to)
         self.cell_lineage = None
-        self.viewer: napari.Viewer = viewer
+        
         # TODO: maybe check the origin of the tracking and give it a different name depending on the origin and the type of labels tracked
         if os.path.exists(Path(animal_path) / "cell_lineage_matlab.pkl"):
             with open(Path(animal_path) / "cell_lineage_matlab.pkl", "rb") as f:
@@ -638,48 +666,15 @@ class Segmenter:
         # except:
         # Create tissue mask by dilating labels to make cells touch, preserving time dimension
 
-        self.raw = self.viewer.add_image(
-            np.array(self.image),
-            name="raw",
-            channel_axis=1,
-        )
-
-        self.labels_layer = self.viewer.add_labels(self.labels, name=self.folder_type)
-
-        # Saving a back up of the initial labels
-        self.ensure_backup_exists()
-
-        # Creating or getting a back up of the outlines of the initial labels
-        self.ensure_skeleton_exists()
-
-        skeleton_zarr = self.skeleton_store[:].copy() 
-
-        self.outlines_layer = self.viewer.add_labels(skeleton_zarr, name=f"outlines_{self.folder_type}")
-     
-        self.viewer = viewer
-        self.drawing_is_active = None
-        self.history = []
-        self.shape = "Free Hand"
-
-        self.ui_widget = SegmenterUI(viewer, self.path_D2)
-
-        self.slider_pos = int(self.viewer.dims.point[0])
-        self.drawing = self.viewer.add_shapes(
-            name="draw", blending="additive", shape_type="path", edge_width=2
-        )
-
-        self.edition_mode = "automatic"
-        self.complete_segmentation = {}
-
-        self.upper_bound = 0
-        self.lower_bound = 0
-        self._connect_widget()
         self.visualize_tracking_events()
+     
+
 
     def _connect_widget(self):
         # Bind callback methods to mouse and key events
         self.viewer.mouse_move_callbacks.append(self.segmenting)
         self.viewer.mouse_drag_callbacks.append(self.toggle_segmenting)
+        self.viewer.mouse_drag_callbacks.append(self.segmenting)
         self.viewer.mouse_drag_callbacks.append(self.remove_label)
         self.viewer.mouse_drag_callbacks.append(self.display_graph)
 
@@ -723,7 +718,7 @@ class Segmenter:
 
         self.ui_widget.export_button.clicked.connect(self.save_current_segmentation)
 
-        self.ui_widget.choose_folder_type.currentIndexChanged.connect(self.change_folder_mode)
+        self.ui_widget.choose_folder_type.currentIndexChanged.connect(self.change_segmentation_folder)
 
     def ensure_backup_exists(self):
         """
@@ -761,21 +756,25 @@ class Segmenter:
                 continue
             skeleton = masks_to_outlines(self.labels[t]).astype(np.uint8)
             self.skeleton_store[t] = skeleton
+        
 
-    def change_folder_mode(self):
+    def change_segmentation_folder(self):
         """
-        Change the current folder of labels
+        Change the current folder being segmented
         """
         # Change folder_type based on the current selection and clear existing layers
         self.folder_type = self.ui_widget.choose_folder_type.currentText()
         print(f"current zarr: {self.folder_type}")
-        
+
         # Remove any existing layers related to the selected folder_type and outlines
         if self.folder_type in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[self.folder_type])
         outlines_name = f"outlines_{self.folder_type}"
         if outlines_name in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[outlines_name])
+        draw_name = f"draw_{self.folder_type}"
+        if draw_name in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[draw_name])
 
         # Load the labels associated with the selected folder_type
         self.labels_original = self.animal.IMAGE.D2[self.folder_type]
@@ -789,6 +788,12 @@ class Segmenter:
         self.ensure_skeleton_exists()
         skeleton_zarr = self.skeleton_store[:].copy()  # Retrieve the skeleton data
         self.outlines_layer = self.viewer.add_labels(skeleton_zarr, name=outlines_name)
+
+        self.drawing = self.viewer.add_shapes(
+            name=f"draw_{self.folder_type}", blending="additive", shape_type="path", edge_width=2
+        )
+        
+        
 
         # Refresh both the labels and outlines layers to update the viewer
         self.labels_layer.refresh()
@@ -954,6 +959,7 @@ class Segmenter:
         state = self.history_manager.undo()
         if state:
             self.apply_state(state, undo=True)
+            return
         print("stop nothing to undo")
 
     def perform_redo(self, viewer):
@@ -1030,8 +1036,9 @@ class Segmenter:
         if SegmenterBindings.is_deletion_mode_activated():
             # Drawing a circle around the click for it to be bigger and touched both labels
             if event.button == 2:
+                print('deletion drawing')
                 x, y = event.position[1:]
-                radius = 2  
+                radius = 3  
                 num_points = 20  
 
                 theta = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
@@ -1118,9 +1125,11 @@ class Segmenter:
     @timing_decorator
     def update_outline(self, bounding_box):
         if len(self.drawing.data[0]) > 0:
+            print(self.drawing.data[0])
 
             # If the removing mode (shift + right click) is activated
             if SegmenterBindings.is_deletion_mode_activated():
+                print("deletion")
 
                 coords_arr = np.array(self.drawing.data[0], dtype=int)  
                 ys = coords_arr[:, 0]
@@ -1188,8 +1197,8 @@ class Segmenter:
                     new_slice_padded[new_slice_padded == top2_labels[0]] = top2_labels[1]
                     self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]=new_slice_padded[padding:-padding, padding:-padding]
 
-                    new_outlines = masks_to_outlines(self.labels_layer.data[i])
-                    self.outlines_layer.data[i]= new_outlines
+                    new_outlines = masks_to_outlines(self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1])
+                    self.outlines_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_outlines
 
                     after = self.labels_layer.data[
                             i,
@@ -1272,13 +1281,22 @@ class Segmenter:
                         comps = cc_label(mask_cut, connectivity=1)
                         if comps.max() < 2:
                             print("No cut detected")
-
-                        new_slice_padded[comps == 2] = new_id
-                        new_id += 1
-                    
+                        # Relabelling new cell, only if size > 1 pix (to deal with solo error pixel)
+                        else:
+                            comps2 = [lab for lab in np.unique(comps) if lab >= 2]
+                            for c in comps2:
+                                comp_mask = (comps == c)
+                                comp_size = comp_mask.sum()
+                                if comp_size > 1:
+                                    new_slice_padded[comp_mask] = new_id
+                                    new_id += 1
+                                    break  
+                            else:
+                                print("No cut detected")
+                                               
                     self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding:-padding]
-                    new_outlines = masks_to_outlines(self.labels_layer.data[i])
-                    self.outlines_layer.data[i]= new_outlines
+                    new_outlines = masks_to_outlines(self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1])
+                    self.outlines_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_outlines
 
                     after = self.labels_layer.data[
                             i,
