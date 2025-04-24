@@ -1488,7 +1488,7 @@ class Segmenter:
 
                     # Store state before modification
                     before = self.labels_layer.data[
-                        self.slider_pos, y_min : y_max, x_min : x_max
+                        self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
                     ].copy()
 
                     # Update the data array directly
@@ -1498,7 +1498,7 @@ class Segmenter:
 
                     # Store state after modification
                     after = self.labels_layer.data[
-                        self.slider_pos, y_min : y_max, x_min : x_max
+                        self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
                     ].copy()
                     print("Label removed successfully")
                     show_info("Label removed successfully")
