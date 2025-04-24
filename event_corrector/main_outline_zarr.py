@@ -1523,118 +1523,118 @@ class Segmenter:
                     self.outlines_layer.refresh()
                     print("History updated and display refreshed")
     
-    def fill_hole_on_click(self, viewer, event):
+    # def fill_hole_on_click(self, viewer, event):
 
-        if (QApplication.instance().keyboardModifiers() & Qt.ShiftModifier
-            and event.button == 1):
+    #     if (QApplication.instance().keyboardModifiers() & Qt.ShiftModifier
+    #         and event.button == 1):
 
-            print("filling")
+    #         print("filling")
             
 
-            for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
-                coords = list(
-                    map(int, viewer.cursor.position[1:])
-                )
-                y, x = coords
+    #         for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
+    #             coords = list(
+    #                 map(int, viewer.cursor.position[1:])
+    #             )
+    #             y, x = coords
 
-                shape = self.labels_layer.data[0].shape
-                h, w = shape
-                if not (0 <= y < h and 0 <= x < w):
-                    show_error(f"Click ({y}, {x}) is outside image bounds (0–{h-1}, 0–{w-1})")
-                    return
+    #             shape = self.labels_layer.data[0].shape
+    #             h, w = shape
+    #             if not (0 <= y < h and 0 <= x < w):
+    #                 show_error(f"Click ({y}, {x}) is outside image bounds (0–{h-1}, 0–{w-1})")
+    #                 return
                 
-                for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
-                    y_min, y_max, x_min, x_max = get_bounding_box_from_coord(coords, shape)
+    #             for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
+    #                 y_min, y_max, x_min, x_max = get_bounding_box_from_coord(coords, shape)
 
-                    before = self.labels_layer.data[
-                        i,
-                        y_min : y_max + 1,
-                        x_min : x_max + 1
-                    ].copy()
+    #                 before = self.labels_layer.data[
+    #                     i,
+    #                     y_min : y_max + 1,
+    #                     x_min : x_max + 1
+    #                 ].copy()
                     
-                    new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
-                    comps = cc_label(new_slice, connectivity=1)
+    #                 new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
+    #                 comps = cc_label(new_slice, connectivity=1)
 
-                    comp_id = comps[y, x]
-                    if comp_id == 0:
-                        # on a cliqué sur un pixel étiqueté, pas dans le fond
-                        return
+    #                 comp_id = comps[y, x]
+    #                 if comp_id == 0:
+    #                     # on a cliqué sur un pixel étiqueté, pas dans le fond
+    #                     return
                     
-                    plt.figure(figsize=(5, 5))
-                    plt.imshow(comps, cmap="nipy_spectral")
-                    plt.title(f"Composantes connexes (fond)")
-                    plt.axis("off")
-                    plt.scatter([x], [y], color='red', s=50, label='Point cliqué')
-                    plt.legend()
-                    plt.show()
+    #                 plt.figure(figsize=(5, 5))
+    #                 plt.imshow(comps, cmap="nipy_spectral")
+    #                 plt.title(f"Composantes connexes (fond)")
+    #                 plt.axis("off")
+    #                 plt.scatter([x], [y], color='red', s=50, label='Point cliqué')
+    #                 plt.legend()
+    #                 plt.show()
                     
-                    # Coordonnées des pixels de cette composante
-                    coords = np.argwhere(comps == comp_id)
-                    ys, xs = coords[:, 0], coords[:, 1]
-                    H, W = new_slice.shape
+    #                 # Coordonnées des pixels de cette composante
+    #                 coords = np.argwhere(comps == comp_id)
+    #                 ys, xs = coords[:, 0], coords[:, 1]
+    #                 H, W = new_slice.shape
                     
-                    # Vérifie que la composante ne touche **pas** le bord → c’est un trou
-                    if (ys.min() == 0 or ys.max() == H-1 or xs.min() == 0 or xs.max() == W-1):
-                        print('pas trou')
-                        # Si elle touche un bord, c'est du véritable fond, pas un trou
-                        return
-                    print('trou')
-                    # OK, c’est un trou : on lui donne un nouveau label
-                    new_id = int(new_slice.max()) + 1
-                    new_slice[comps == comp_id] = new_id
+    #                 # Vérifie que la composante ne touche **pas** le bord → c’est un trou
+    #                 if (ys.min() == 0 or ys.max() == H-1 or xs.min() == 0 or xs.max() == W-1):
+    #                     print('pas trou')
+    #                     # Si elle touche un bord, c'est du véritable fond, pas un trou
+    #                     return
+    #                 print('trou')
+    #                 # OK, c’est un trou : on lui donne un nouveau label
+    #                 new_id = int(new_slice.max()) + 1
+    #                 new_slice[comps == comp_id] = new_id
 
 
             
 
-                    new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
-                    # Padding with background to avoid problems at the border of the bounding box
-                    new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
-                    # Get a label id unused
-                    new_id = self.labels_layer.data[i].max() + 1
+    #                 new_slice = self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1].copy()
+    #                 # Padding with background to avoid problems at the border of the bounding box
+    #                 new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
+    #                 # Get a label id unused
+    #                 new_id = self.labels_layer.data[i].max() + 1
 
-                    # For each label touched, if it is entirely cut by the drawing -> 1 new label on only one side of the drawing, the other is untouched
-                    for label in label_values_unique:
-                        region  = (new_slice_padded == label)
-                        barrier = np.zeros_like(region)
-                        barrier[local_ys, local_xs] = True
-                        mask_cut = region & (~barrier)
-                        comps = cc_label(mask_cut, connectivity=1)
-                        if comps.max() < 2:
-                            print("No cut detected")
-                        # Relabelling new cell, only if size > 1 pix (to deal with solo error pixel)
-                        else:
-                            comps2 = [lab for lab in np.unique(comps) if lab >= 2]
-                            for c in comps2:
-                                comp_mask = (comps == c)
-                                comp_size = comp_mask.sum()
-                                if comp_size > 1:
-                                    new_slice_padded[comp_mask] = new_id
-                                    new_id += 1
-                                    break  
-                            else:
-                                print("No cut detected")
+    #                 # For each label touched, if it is entirely cut by the drawing -> 1 new label on only one side of the drawing, the other is untouched
+    #                 for label in label_values_unique:
+    #                     region  = (new_slice_padded == label)
+    #                     barrier = np.zeros_like(region)
+    #                     barrier[local_ys, local_xs] = True
+    #                     mask_cut = region & (~barrier)
+    #                     comps = cc_label(mask_cut, connectivity=1)
+    #                     if comps.max() < 2:
+    #                         print("No cut detected")
+    #                     # Relabelling new cell, only if size > 1 pix (to deal with solo error pixel)
+    #                     else:
+    #                         comps2 = [lab for lab in np.unique(comps) if lab >= 2]
+    #                         for c in comps2:
+    #                             comp_mask = (comps == c)
+    #                             comp_size = comp_mask.sum()
+    #                             if comp_size > 1:
+    #                                 new_slice_padded[comp_mask] = new_id
+    #                                 new_id += 1
+    #                                 break  
+    #                         else:
+    #                             print("No cut detected")
                                             
-                    self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding:-padding]
-                    # Patching for outline context
-                    outline_borders = 2
-                    y0 = min(0, y_min - outline_borders)
-                    y1 = max(self.labels_layer.data[i].shape[0], y_max + 1 + outline_borders)
-                    x0 = min(0, x_min - outline_borders)
-                    x1 = max(self.labels_layer.data[i].shape[1], x_max + 1 + outline_borders)
+    #                 self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding:-padding]
+    #                 # Patching for outline context
+    #                 outline_borders = 2
+    #                 y0 = min(0, y_min - outline_borders)
+    #                 y1 = max(self.labels_layer.data[i].shape[0], y_max + 1 + outline_borders)
+    #                 x0 = min(0, x_min - outline_borders)
+    #                 x1 = max(self.labels_layer.data[i].shape[1], x_max + 1 + outline_borders)
 
-                    # Outlines with more context
-                    new_outline_with_context = masks_to_outlines(self.labels_layer.data[i][y0:y1, x0:x1])
-                    self.outlines_layer.data[i][y0:y1, x0:x1] = new_outline_with_context[y0:y1, x0:x1]
+    #                 # Outlines with more context
+    #                 new_outline_with_context = masks_to_outlines(self.labels_layer.data[i][y0:y1, x0:x1])
+    #                 self.outlines_layer.data[i][y0:y1, x0:x1] = new_outline_with_context[y0:y1, x0:x1]
                     
 
-                    after = self.labels_layer.data[
-                            i,
-                            y_min : y_max + 1,
-                            x_min : x_max + 1
-                        ].copy()
-                    self.history_manager.add_state(
-                        0, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
-                    )
+    #                 after = self.labels_layer.data[
+    #                         i,
+    #                         y_min : y_max + 1,
+    #                         x_min : x_max + 1
+    #                     ].copy()
+    #                 self.history_manager.add_state(
+    #                     0, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
+    #                 )
         
         
         

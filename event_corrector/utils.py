@@ -5,8 +5,17 @@ from skimage.morphology import skeletonize
 import networkx as nx
 import matplotlib.pyplot as plt
 
+def get_bounding_box_from_coord(coord, shape, bounding_box = 50):
+    y_coord, x_coord = coord
+    h,w = shape
+    y_min, y_max = min(0,y_coord - bounding_box), max(h-1,y_coord+50)
+    x_min, x_max = min(0,x_coord - bounding_box), max(w-1,x_coord+50)
 
-def get_bounding_box_from_coords(coords, labels=None, shape= None):
+    return int(y_min), int(y_max), int(x_min), int(x_max)
+
+
+
+def get_bounding_box_from_coords(coords):
     """
     Calculates the bounding box coordinates for a given list of coordinates.
 
