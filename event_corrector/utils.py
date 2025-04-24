@@ -20,36 +20,6 @@ def get_bounding_box_from_coords(coords, labels=None, shape= None):
     Tuple[int, int, int, int]
         Tuple containing the (y_min, y_max, x_min, x_max) values of the bounding box.
     """
-    
-
-    # if labels is not None:
-    #     if shape is not None:
-    #         h, w = shape[0] - 1, shape[1] - 1
-    #         coords = np.array(coords).astype(int)
-    #         valid_indices = np.where(
-    #             (coords[0] >= 0) & (coords[0] < h) &
-    #             (coords[1] >= 0) & (coords[1] < w)
-    #         )[0]
-
-    #         coords = coords[:, valid_indices]
-
-    #         # Get unique labels at the coordinate positions
-    #         label_values = np.unique(labels[coords[0], coords[1]])
-            
-    #         # y_coords = coords[:, 0].tolist()
-    #         # x_coords = coords[:, 1].tolist()
-    #         y_coords = []
-    #         x_coords = []
-    #         for label in labels:
-    #             label_mask = label_values == label
-    #             label_coords = np.where(label_mask)
-    #             y_coords.extend(label_coords[0])
-    #             x_coords.extend(label_coords[1])
-                
-    #     y_min, y_max = min(y_coords), max(y_coords)
-    #     x_min, x_max = min(x_coords), max(x_coords)
-        
-    #     return int(y_min), int(y_max), int(x_min), int(x_max)
 
 
     y_coords, x_coords = coords[0], coords[1]
