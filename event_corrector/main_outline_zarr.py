@@ -613,7 +613,7 @@ class Segmenter:
         # TO CHECK (changement de self.labels -> check if what is below is still doing what it is supposed to)
         self.cell_lineage = None
         self.viewer: napari.Viewer = viewer
-
+        # TODO: maybe check the origin of the tracking and give it a different name depending on the origin and the type of labels tracked
         if os.path.exists(Path(animal_path) / "cell_lineage_matlab.pkl"):
             with open(Path(animal_path) / "cell_lineage_matlab.pkl", "rb") as f:
                 self.cell_lineage = pickle.load(f)
@@ -734,7 +734,7 @@ class Segmenter:
             self.animal.IMAGE.D2.create_dataset(
                 name=f"{self.folder_type}_backup",
                 shape=self.labels.shape,
-                dtype="uint8",
+                dtype="uint16",
                 chunks=(1, *self.labels.shape[1:]),
             )
         backup_label = self.path_D2[f"{self.folder_type}_backup"]
@@ -908,7 +908,6 @@ class Segmenter:
 
             if self.drawing_is_active:
                 self.drawing_is_active = False
-                print("toggle")
                 # Automatic mode : we add/remove the outlines instantaneously and clear the drawing
                 if self.edition_mode == "automatic":
                     self.handle_sequential_mode()
