@@ -2,6 +2,7 @@ import pickle
 from warnings import warn
 from pathlib import Path
 import napari
+from napari.utils.notifications import show_info
 import numpy as np
 import skimage.morphology
 from skimage.draw import line
@@ -961,6 +962,7 @@ class Segmenter:
             self.apply_state(state, undo=True)
             return
         print("stop nothing to undo")
+        show_info("Nothing to undo")
 
     def perform_redo(self, viewer):
         state = self.history_manager.redo()
@@ -968,6 +970,7 @@ class Segmenter:
             self.apply_state(state, undo=False)
             return
         print("stop nothing to redo")
+        show_info("Nothing to redo")
 
     def apply_state(self, state, undo=False):
         # Apply changes from the state
@@ -1036,7 +1039,6 @@ class Segmenter:
         if SegmenterBindings.is_deletion_mode_activated():
             # Drawing a circle around the click for it to be bigger and touched both labels
             if event.button == 2:
-                print('deletion drawing')
                 x, y = event.position[1:]
                 radius = 3  
                 num_points = 20  
@@ -1125,11 +1127,9 @@ class Segmenter:
     @timing_decorator
     def update_outline(self, bounding_box):
         if len(self.drawing.data[0]) > 0:
-            print(self.drawing.data[0])
 
             # If the removing mode (shift + right click) is activated
             if SegmenterBindings.is_deletion_mode_activated():
-                print("deletion")
 
                 coords_arr = np.array(self.drawing.data[0], dtype=int)  
                 ys = coords_arr[:, 0]
@@ -1197,8 +1197,16 @@ class Segmenter:
                     new_slice_padded[new_slice_padded == top2_labels[0]] = top2_labels[1]
                     self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]=new_slice_padded[padding:-padding, padding:-padding]
 
-                    new_outlines = masks_to_outlines(self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1])
-                    self.outlines_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_outlines
+                    # Patching for outline context
+                    outline_borders = 2
+                    y0 = min(0, y_min - outline_borders)
+                    y1 = max(self.labels_layer.data[i].shape[0], y_max + 1 + outline_borders)
+                    x0 = min(0, x_min - outline_borders)
+                    x1 = max(self.labels_layer.data[i].shape[1], x_max + 1 + outline_borders)
+
+                    # Outlines with more context
+                    new_outline_with_context = masks_to_outlines(self.labels_layer.data[i][y0:y1, x0:x1])
+                    self.outlines_layer.data[i][y0:y1, x0:x1] = new_outline_with_context[y0:y1, x0:x1]
 
                     after = self.labels_layer.data[
                             i,
@@ -1295,8 +1303,17 @@ class Segmenter:
                                 print("No cut detected")
                                                
                     self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding:-padding]
-                    new_outlines = masks_to_outlines(self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1])
-                    self.outlines_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_outlines
+                    # Patching for outline context
+                    outline_borders = 2
+                    y0 = min(0, y_min - outline_borders)
+                    y1 = max(self.labels_layer.data[i].shape[0], y_max + 1 + outline_borders)
+                    x0 = min(0, x_min - outline_borders)
+                    x1 = max(self.labels_layer.data[i].shape[1], x_max + 1 + outline_borders)
+
+                    # Outlines with more context
+                    new_outline_with_context = masks_to_outlines(self.labels_layer.data[i][y0:y1, x0:x1])
+                    self.outlines_layer.data[i][y0:y1, x0:x1] = new_outline_with_context[y0:y1, x0:x1]
+                    
 
                     after = self.labels_layer.data[
                             i,
@@ -1333,7 +1350,7 @@ class Segmenter:
         """
         self.labels_original[:] = self.labels_layer.data
         self.skeleton_store[:] = self.outlines_layer.data
-        print("segmentation exported")
+        show_info(f"{self.folder_type} segmentation exported")
 
     def run_cell_tracking(self):
         """
@@ -1484,15 +1501,24 @@ class Segmenter:
                         self.slider_pos, y_min : y_max, x_min : x_max
                     ].copy()
                     print("Label removed successfully")
+                    show_info("Label removed successfully")
 
                     self.history_manager.add_state(
                         label_value, (frame, x_min, y_min, x_max, y_max), before, after
                     )
                     self.masks = self.labels_layer.data
                     self.labels_layer.refresh()
-                    self.outlines_layer.data[self.slider_pos] = masks_to_outlines(
-                        self.labels_layer.data[self.slider_pos]
-                    )
+                    # Patching for outline context
+                    outline_borders = 2
+                    y0 = min(0, y_min - outline_borders)
+                    y1 = max(self.labels_layer.data[self.slider_pos].shape[0], y_max + 1 + outline_borders)
+                    x0 = min(0, x_min - outline_borders)
+                    x1 = max(self.labels_layer.data[self.slider_pos].shape[1], x_max + 1 + outline_borders)
+
+                    # Outlines with more context
+                    new_outline_with_context = masks_to_outlines(self.labels_layer.data[self.slider_pos][y0:y1, x0:x1])
+                    self.outlines_layer.data[self.slider_pos][y0:y1, x0:x1] = new_outline_with_context[y0:y1, x0:x1]
+
                     self.outlines_layer.refresh()
                     print("History updated and display refreshed")
 
