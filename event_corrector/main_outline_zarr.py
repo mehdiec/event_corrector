@@ -777,7 +777,17 @@ class Segmenter:
         self.labels_original = self.animal.IMAGE.D2[self.folder_type]
         self.labels = self.animal.IMAGE.D2[self.folder_type][:].copy()
         self.labels_layer = self.viewer.add_labels(self.labels, name=self.folder_type)
+        # print("inverting...")
+        # inverted = self.labels_layer.data.copy()
+        # inverted[self.labels_layer.data == 0] = 9999 # Met un label temporaire
+        # print("cleaning...")
+        # # Appliquer remove_small_objects sur l'image inversée
+        # cleaned = skimage.morphology.remove_small_objects(inverted, min_size=5)
+        # print("inverting...")
+        # # Remettre le fond à 0
+        # cleaned[cleaned == 9999] = 0
 
+        # self.labels_layer.data = cleaned
         # Ensure the backup exists before proceeding
         self.ensure_backup_exists()
 
@@ -1188,7 +1198,7 @@ class Segmenter:
                     # Padding with background to avoid problems at the border of the bounding box
                     new_slice_padded = np.pad(new_slice, pad_width=padding, mode="constant",constant_values = 0)
                     # Get a label id unused
-                    new_id = self.labels_layer.data[i].max() + 1
+                    new_id = self.labels_layer.data.max() + 1
 
                     # For each label touched, if it is entirely cut by the drawing -> 1 new label on only one side of the drawing, the other is untouched
                     for label in label_values_unique:
@@ -1590,7 +1600,7 @@ class Segmenter:
                 H, W = new_slice.shape
                 
                 if (ys.min() == 0 or ys.max() == H-1 or xs.min() == 0 or xs.max() == W-1):
-                    print('No hole detected')
+                    show_error('No hole detected')
                     return
 
                 new_id = int(self.labels_layer.data.max()) + 1
