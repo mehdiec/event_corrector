@@ -1122,7 +1122,6 @@ class Segmenter:
     def update_outline(self, bounding_box):
         if len(self.drawing.data[0]) > 0:
 
-            # If the removing mode (shift + right click) is activated
             if not SegmenterBindings.is_deletion_mode_activated():
                 coords = np.array(self.drawing.data[0], dtype=int)
 
@@ -1146,21 +1145,27 @@ class Segmenter:
 
                     label_values = self.labels_layer.data[i][ys_valid, xs_valid]
                   
-                    label_values_unique = np.unique(label_values)
+                    label_values_unique, counts = np.unique(label_values, return_counts = True)
 
                     # Bounding box is defined by the drawing and the labels touched (except background)
-                    y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
-                    x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
+                    
                     if label_values_unique[label_values_unique!=0].size !=0:
-                        y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
-                                self.labels_layer.data[i],
-                                label_values_unique[label_values_unique!=0]
-                            )
-                        y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
-                        x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                        # If the background is the principal label
+                        if np.argsort(counts)[::-1][0]==0:
+                            y_min, y_max, x_min, x_max = get_bounding_box_from_coords([ys_valid,xs_valid], shape)
+                        else:
+                            y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
+                            x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
+                            y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
+                                    self.labels_layer.data[i],
+                                    label_values_unique[label_values_unique!=0]
+                                )
+                            y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
+                            x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                    #If the background is the only label
                     else:
-                        y_min, y_max = y_min_draw, y_max_draw
-                        x_min, x_max = x_min_draw, x_max_draw
+                        y_min, y_max, x_min, x_max = get_bounding_box_from_coords([ys_valid,xs_valid], shape)
+
 
                     before = self.labels_layer.data[
                         i,
@@ -1193,9 +1198,6 @@ class Segmenter:
                         mask_cut = region & (~barrier)
                         comps = cc_label(mask_cut, connectivity=1)
 
-                        # plt.figure()
-                        # plt.imshow(comps, cmap= "nipy_spectral")
-                        # plt.show()
 
                         if comps.max() < 2:
                             print("No cut detected")
@@ -1499,7 +1501,9 @@ class Segmenter:
                     # Get mask of pixels with this label value
                     label_mask = self.labels_layer.data[self.slider_pos] == label_value
                     coords = np.where(label_mask)
-                    y_min, y_max, x_min, x_max = get_bounding_box_from_coords(coords)
+                    y_coords, x_coords = coords[0], coords[1]
+                    y_min, y_max = min(y_coords), max(y_coords)
+                    x_min, x_max = min(x_coords), max(x_coords)
                     print(
                         f"Bounding box: y_min={y_min}, y_max={y_max}, x_min={x_min}, x_max={x_max}"
                     )
@@ -1578,10 +1582,6 @@ class Segmenter:
 
                 background_mask = (new_slice == 0)
                 comps_background= cc_label(background_mask, connectivity=1)
-
-                # plt.figure(figsize=(5, 5))
-                # plt.imshow(comps_background, cmap="nipy_spectral")
-                # plt.show()
 
                 comp_id = comps_background[y-y_min, x-x_min]
                                 
