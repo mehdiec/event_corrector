@@ -12,6 +12,7 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
+    QSpinBox,
     QComboBox,
     QGroupBox,
     QHBoxLayout,
@@ -289,6 +290,7 @@ class SegmenterUI(QWidget):
         self.export_results_group_box = QGroupBox("Export Results")
         self.graph_group_box = QGroupBox("Graph")
         self.folder_mode_group_box = QGroupBox("Segmentation type")
+        self.remove_holes_group_box = QGroupBox("Remove holes")
 
         self.cell_traking_box_layout = QVBoxLayout(self.cell_tracking_group_box)
         self.tracking_box_layout = QVBoxLayout(self.tracking_event_group_box)
@@ -296,6 +298,7 @@ class SegmenterUI(QWidget):
         self.export_results_layout = QVBoxLayout(self.export_results_group_box)
         self.graph_group = QVBoxLayout(self.graph_group_box)
         self.folder_mode_layout = QVBoxLayout(self.folder_mode_group_box)
+        self.remove_holes_layout = QVBoxLayout(self.remove_holes_group_box)
 
         self.plotting_group_box = QGroupBox("Time Evolution Parameters")
 
@@ -372,13 +375,22 @@ class SegmenterUI(QWidget):
         layout.addWidget(self.folder_mode_group_box)
         
         self.current_folder = QLabel("")
-        layout.addWidget(self.current_folder)
+        self.folder_mode_layout.addWidget(self.current_folder)
 
         # Subfolders of the animal.image.D2 available
         self.load_subfolders(path_D2)
-        self.choose_folder_type.currentTextChanged.connect(self.on_selection_changed)
+
+        # Removing holes 
+        self.spinbox_holes_size = QSpinBox()
+        self.spinbox_holes_size.setMinimum(0)
+        self.spinbox_holes_size.setMaximum(100)
+        self.spinbox_holes_size.setValue(0)
+        self.remove_holes_layout.addWidget(self.spinbox_holes_size)
+        self.clean_holes_button= QPushButton("Remove holes")
+        self.remove_holes_layout.addWidget(self.clean_holes_button)
         
         # self.cell_traking_box_layout.addLayout(self.cell_traking_box_layout)
+        layout.addWidget(self.remove_holes_group_box)
         layout.addWidget(self.draw_parameter_group_box)
         layout.addWidget(self.cell_tracking_group_box)
         layout.addWidget(self.tracking_event_group_box)
@@ -629,9 +641,9 @@ class Segmenter:
 
         self.upper_bound = 0
         self.lower_bound = 0
+        self.change_segmentation_folder()
         self._connect_widget()
         
-        self.change_segmentation_folder()
 
         # TO CHECK (changement de self.labels -> check if what is below is still doing what it is supposed to)
         self.cell_lineage = None
@@ -717,6 +729,8 @@ class Segmenter:
 
         self.ui_widget.choose_folder_type.currentIndexChanged.connect(self.change_segmentation_folder)
 
+        self.ui_widget.clean_holes_button.clicked.connect(self.clean_holes)
+
     @timing_decorator
     def ensure_backup_exists(self):
         """
@@ -748,6 +762,7 @@ class Segmenter:
                 dtype="uint8",
                 chunks=(1, *self.labels.shape[1:]),
             )
+
         self.skeleton_store = self.path_D2[f"{self.folder_type}_skeleton"]
         for t in tqdm(range(self.labels.shape[0]), desc="Checking/generating skeleton"):
             if np.any(self.skeleton_store[t]):
@@ -761,7 +776,7 @@ class Segmenter:
         """
         # Change folder_type based on the current selection and clear existing layers
         self.folder_type = self.ui_widget.choose_folder_type.currentText()
-        print(f"current zarr: {self.folder_type}")
+        print(f"Current zarr: {self.folder_type}")
 
         # Remove any existing layers related to the selected folder_type and outlines
         if self.folder_type in self.viewer.layers:
@@ -777,15 +792,7 @@ class Segmenter:
         self.labels_original = self.animal.IMAGE.D2[self.folder_type]
         self.labels = self.animal.IMAGE.D2[self.folder_type][:].copy()
         self.labels_layer = self.viewer.add_labels(self.labels, name=self.folder_type)
-        # print("inverting...")
-        # inverted = self.labels_layer.data.copy()
-        # inverted[self.labels_layer.data == 0] = 9999 # Met un label temporaire
-        # print("cleaning...")
-        # # Appliquer remove_small_objects sur l'image inversée
-        # cleaned = skimage.morphology.remove_small_objects(inverted, min_size=5)
-        # print("inverting...")
-        # # Remettre le fond à 0
-        # cleaned[cleaned == 9999] = 0
+        
 
         # self.labels_layer.data = cleaned
         # Ensure the backup exists before proceeding
@@ -803,6 +810,7 @@ class Segmenter:
         # Refresh both the labels and outlines layers to update the viewer
         self.labels_layer.refresh()
         self.outlines_layer.refresh()
+        self.ui_widget.on_selection_changed(self.folder_type)
 
     def clean_state(self):
         """Removes layers from viewer"""
@@ -821,7 +829,18 @@ class Segmenter:
             # Disconnect all signal-slot connections of the widget
         # self.ui_widget = None
 
-    @timing_decorator
+    def clean_holes(self):
+        for i in range(self.labels_layer.data.shape[0]):
+            print(f"Cleaning frame {i}")
+            frame = self.labels_layer.data[i]
+            binary_objects = frame.astype(bool)
+            binary_filled = skimage.morphology.remove_small_holes(binary_objects, self.ui_widget.spinbox_holes_size.value()+1)
+            objects_filled = skimage.segmentation.watershed(
+                    binary_filled, frame, mask=binary_filled
+                    )
+            self.labels_layer.data[i] = objects_filled
+        self.labels_layer.refresh()
+
     def update_slider(self, event):
         """
         Update the slider position and related attributes based on viewer dimensions.
@@ -899,7 +918,6 @@ class Segmenter:
         self.ui_widget.combo_box_shape.setCurrentText(self.shape)
         self.ui_widget.combo_box_shape.blockSignals(False)
 
-    @timing_decorator
     def toggle_segmenting(self, viewer, event):
         """
         Toggle segmenting mode based on the middle mouse button.
@@ -1070,7 +1088,7 @@ class Segmenter:
                 if not self.drawing.shape_type == "path":
                     self.drawing.shape_type = "path"
                 # Set edge width to 2 pixels for thicker path
-                self.drawing.edge_width = 2
+                self.drawing.edge_width = 1
             elif self.shape == "Line":
                 # This draws the line
                 if event.button == 1:
@@ -1079,8 +1097,7 @@ class Segmenter:
                     # if not self.drawing.shape_type == "line":
                     if not self.drawing.shape_type == "path":
                         self.drawing.shape_type = "path"
-                    # Set edge width to 2 pixels for thicker path
-                    self.drawing.edge_width = 2
+                    self.drawing.edge_width = 1
 
 
     def handle_sequential_mode(self, viewer=None, bounding_box=50, padding=0.2):
@@ -1150,7 +1167,7 @@ class Segmenter:
                 valid = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w)
                 ys_valid = ys[valid]
                 xs_valid = xs[valid]
-                
+
                 for i in range(self.ui_widget.lower_change, self.ui_widget.upper_change):
 
                     label_values = self.labels_layer.data[i][ys_valid, xs_valid]
@@ -1159,33 +1176,34 @@ class Segmenter:
 
                     # Bounding box is defined by the drawing and the labels touched (except background)
                     
-                    if label_values_unique[label_values_unique!=0].size !=0:
-                        # If the background is the principal label
-                        if np.argsort(counts)[::-1][0]==0:
-                            y_min, y_max, x_min, x_max = get_bounding_box_from_coords([ys_valid,xs_valid], shape)
-                        else:
-                            y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
-                            x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
-                            y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
-                                    self.labels_layer.data[i],
-                                    label_values_unique[label_values_unique!=0]
-                                )
-                            y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
-                            x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
-                    #If the background is the only label
+                    # If the background is not the principal label
+                    if np.argsort(counts)[::-1][0]!=0:
+                        y_min_draw, y_max_draw = ys_valid.min(), ys_valid.max()
+                        x_min_draw, x_max_draw = xs_valid.min(), xs_valid.max()
+                        y_min_labels, y_max_labels, x_min_labels, x_max_labels=get_bounding_box_from_labels(
+                                self.labels_layer.data[i],
+                                label_values_unique[label_values_unique!=0]
+                            )
+                        y_min, y_max = min(y_min_draw, y_min_labels), max(y_max_draw, y_max_labels)
+                        x_min, x_max = min(x_min_draw, x_min_labels), max(x_max_draw, x_max_labels)
+                    # If the background is the principal label
                     else:
                         y_min, y_max, x_min, x_max = get_bounding_box_from_coords([ys_valid,xs_valid], shape)
-
-
+                    
+                    # Padding only if we are not in the border of the image
+                    if (x_max==0) or (y_max==0) or (y_max==h-1) or (x_max==w-1):
+                        padding = 0
+                    else:
+                        padding = 2
+                
                     before = self.labels_layer.data[
                         i,
                         y_min : y_max + 1,
                         x_min : x_max + 1
                     ].copy()
 
-                    padding = 2
-
-                    valid = (ys >= y_min) & (ys <= y_max+1) & (xs >= x_min) & (xs <= x_max+1)
+                    
+                    valid = (ys >= y_min) & (ys <= y_max) & (xs >= x_min) & (xs <= x_max)
                     ys = ys[valid]
                     xs = xs[valid]
                     
@@ -1208,9 +1226,8 @@ class Segmenter:
                         mask_cut = region & (~barrier)
                         comps = cc_label(mask_cut, connectivity=1)
 
-
                         if comps.max() < 2:
-                            print("No cut detected")
+                            print(f"No cut detected in label {label}")
                         # Relabelling new cell, only if size > 1 pix (to deal with solo error pixel)
                         else:
                             comps2 = [lab for lab in np.unique(comps) if lab >= 2]
@@ -1221,9 +1238,13 @@ class Segmenter:
                                     new_slice_padded[comp_mask] = new_id
                                     new_id += 1
                             else:
-                                print("No cut detected")
-                                               
-                    self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding:-padding]
+                                print(f"No cut detected in label {label}")
+
+                    if padding !=0:
+                        self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded[padding:-padding, padding: -padding]
+                    else:
+                        self.labels_layer.data[i][y_min:y_max+1, x_min:x_max+1]= new_slice_padded
+
                     # Patching for outline context
                     outline_borders = 2
                     y0 = max(0, y_min - outline_borders)
@@ -1559,8 +1580,6 @@ class Segmenter:
 
         if (QApplication.instance().keyboardModifiers() & Qt.ShiftModifier
             and event.button == 1):
-
-            print("filling")
 
             for i in range(self.slider_pos, self.slider_pos+1):
                 coords = list(

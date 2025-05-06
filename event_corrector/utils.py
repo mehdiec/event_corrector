@@ -7,27 +7,26 @@ import matplotlib.pyplot as plt
 
 
 def get_bounding_box_from_coord(coord, shape, bounding_box = 50):
-
     y_coord, x_coord = coord
     h,w = shape
-    y_min, y_max = max(0,y_coord - bounding_box), min(h-1,y_coord+50)
-    x_min, x_max = max(0,x_coord - bounding_box), min(w-1,x_coord+50)
+    y_min, y_max = max(0,y_coord - bounding_box), min(h-1,y_coord+bounding_box)
+    x_min, x_max = max(0,x_coord - bounding_box), min(w-1,x_coord+bounding_box)
 
     return int(y_min), int(y_max), int(x_min), int(x_max)
 
 def get_bounding_box_from_coords(coords, shape, bounding_box = 50):
-
     y_coords, x_coords = coords[0], coords[1]
     h,w = shape
     y_min_coords, y_max_coords = min(y_coords), max(y_coords)
     x_min_coords, x_max_coords = min(x_coords), max(x_coords)
 
-    y_min, y_max = max(0,y_min_coords - bounding_box), min(h-1,y_max_coords+50)
-    x_min, x_max = max(0,x_min_coords - bounding_box), min(w-1,x_max_coords+50)
+    y_min, y_max = max(0,y_min_coords - bounding_box), min(h-1,y_max_coords+bounding_box)
+    x_min, x_max = max(0,x_min_coords - bounding_box), min(w-1,x_max_coords+bounding_box)
 
     return int(y_min), int(y_max), int(x_min), int(x_max)
 
 def get_bounding_box_from_labels(labels, touched_labels):
+    print("from labels")
     """
     Calculates the bounding box coordinates for a given list of labels.
 
