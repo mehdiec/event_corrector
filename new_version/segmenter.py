@@ -90,6 +90,7 @@ class Segmenter:
         self.viewer.bind_key("C", self.clear_drawing, overwrite=True)
         self.viewer.bind_key("Control-Z", self.perform_undo, overwrite=True)
         self.viewer.bind_key("Control-Y", self.perform_redo, overwrite=True)
+        self.viewer.bind_key("O", self.change_outlines_visibility, overwrite=True)
 
     def get_labels_layer(self):
         return self.labels_layer
@@ -102,6 +103,7 @@ class Segmenter:
     
     def set_shape(self, shape):
         self.shape = shape
+ 
         
     def clean_holes(self, size_holes):
         for i in range(self.labels_layer.data.shape[0]):
@@ -603,6 +605,9 @@ class Segmenter:
             self.outlines_layer.refresh()
             self.labels_layer.refresh()
 
+    def change_outlines_visibility(self, viewer):
+        if self.outlines_layer is not None:
+            self.outlines_layer.visible = not self.outlines_layer.visible  
 
     def perform_undo(self, viewer):
         state = self.history_manager.undo()
