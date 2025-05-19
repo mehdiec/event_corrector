@@ -76,7 +76,7 @@ class Segmenter:
         self.viewer = viewer
         self.labels_layer = labels_layer
         self.outlines_layer = outlines_layer
-        self.drawing = viewer.add_shapes(name="draw", blending="additive", shape_type="path", edge_width=2)
+        self.drawing = viewer.add_shapes(name="draw", blending="additive", shape_type="rectangle", edge_width=1)
         self.drawing_is_active = None
         self.shape = "Free Hand"
         self.history_manager = HistoryManager()
@@ -102,6 +102,7 @@ class Segmenter:
     
     def set_shape(self, shape):
         self.shape = shape
+        print(self.shape)
         
     def clean_holes(self, size_holes):
         for i in range(self.labels_layer.data.shape[0]):
@@ -289,8 +290,12 @@ class Segmenter:
             if not (QApplication.instance().keyboardModifiers() & Qt.ShiftModifier):
                 if self.drawing_is_active:
                     self.drawing_is_active = False
-                    self.split_or_add_labels(bounding_box=50)
-                    self.clear_drawing()
+                    if self.shape == "Remove Segmentation":
+                        self.remove_segmentation()
+                        self.clear_drawing()
+                    else:
+                        self.split_or_add_labels(bounding_box=50)
+                        self.clear_drawing()
 
                 # If we enter segmenting mode
                 else:
@@ -310,6 +315,7 @@ class Segmenter:
                     self.segmenting_path += [event.position[1:]]
                     self.drawing.data = [self.segmenting_path]
                 if not self.drawing.shape_type == "path":
+                    print("changing to path")
                     self.drawing.shape_type = "path"
                 # Set edge width to 2 pixels for thicker path
                 self.drawing.edge_width = 1
@@ -323,6 +329,21 @@ class Segmenter:
                         self.drawing.shape_type = "path"
                     self.drawing.edge_width = 1
                     self.drawing.refresh()
+            elif self.shape == "Remove Segmentation":
+                y0, x0 = self.segmenting_path[0]
+                y1, x1 = event.position[1:]
+
+                self.drawing.data = [[(y0, x0), (y1, x1)]]
+                print(y0, x0, y1, x1)
+
+                if not self.drawing.shape_type == "rectangle":
+                    print(self.drawing.shape_type)
+                    self.drawing.shape_type = "rectangle"
+
+                # napari rectangle data attend [[y, x, height, width]]
+                self.drawing.edge_width = 1
+
+
 
     def clear_drawing(self, viewer=None):
         if self.update_drawing in self.viewer.mouse_move_callbacks:
@@ -529,6 +550,62 @@ class Segmenter:
 
                     self.outlines_layer.refresh()
                     print("History updated and display refreshed")
+
+    def remove_segmentation(self):
+        if len(self.drawing.data[0]) > 0:
+            ys, xs = self.drawing.data[self.slider_pos][:,0], self.drawing.data[self.slider_pos][:,1]
+            ys = np.array(ys, dtype=int)
+            xs = np.array(xs, dtype=int)
+            shape = self.labels_layer.data[self.slider_pos].shape
+            h, w = shape
+            y_min, y_max = max(min(ys),0), min(max(ys), h)
+            x_min, x_max = max(min(xs),0), min(max(xs), w)
+            label_values = self.labels_layer.data[self.slider_pos][y_min:y_max, x_min:x_max]
+            # Each unique labels
+            uniques = np.unique(label_values)
+            # y_min, y_max, x_min, x_max=get_bounding_box_from_labels(
+            #     self.labels_layer.data[self.slider_pos],
+            #     uniques
+            # )
+
+            y_min, y_max = max(min(ys)-50,0), min(max(ys)+50,h-1)
+            x_min, x_max = max(min(xs)-50,0), min(max(xs)+50,w-1)
+            
+            # Store state before modification
+            before = self.labels_layer.data[
+                self.slider_pos, y_min : y_max + 1, x_min : x_max + 1
+            ].copy()
+
+            labels = self.labels_layer.data[self.slider_pos, y_min : y_max + 1, x_min : x_max + 1]
+            mask = np.isin(labels, uniques)
+            labels[mask]=0
+            self.labels_layer.data[self.slider_pos, y_min : y_max + 1, x_min : x_max + 1] = labels
+
+            # Patching for outline context
+            outline_borders = 2
+            y0 = max(0, y_min - outline_borders)
+            y1 = min(self.labels_layer.data[self.slider_pos].shape[0], y_max + 1 + outline_borders)
+            x0 = max(0, x_min - outline_borders)
+            x1 = min(self.labels_layer.data[self.slider_pos].shape[1], x_max + 1 + outline_borders)
+
+            # Outlines with more context
+            new_outline_with_context = masks_to_outlines(self.labels_layer.data[self.slider_pos][y0:y1, x0:x1])
+            self.outlines_layer.data[self.slider_pos][y0:y1, x0:x1] = new_outline_with_context
+            
+
+            after = self.labels_layer.data[
+                    self.slider_pos,
+                    y_min : y_max + 1,
+                    x_min : x_max + 1
+                ].copy()
+            
+            self.history_manager.add_state(
+                0, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
+            )
+            
+            self.outlines_layer.refresh()
+            self.labels_layer.refresh()
+
 
     def perform_undo(self, viewer):
         state = self.history_manager.undo()

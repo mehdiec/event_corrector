@@ -15,12 +15,10 @@ from segmenter import Segmenter
 from qtpy.QtWidgets import QMessageBox
 
 def init(viewer: napari.Viewer, animal_path):
-    animal = zarr.open(animal_path)
-
-    folder_manager = FolderManager(animal)
+    
+    folder_manager = FolderManager(Path(animal_path))
     raw_image = folder_manager.get_raw_image()
     sub_keys = folder_manager.get_subkeys()
-    path_public = Path(os.environ.get("path_public"))
 
     viewer = viewer
     ui_widget = CorrectionUI()
@@ -50,7 +48,7 @@ def init(viewer: napari.Viewer, animal_path):
         outlines_layer = viewer.add_labels(outlines, name= f"outlines_{current_folder}")
 
         segmenter = Segmenter(viewer, labels_layer, outlines_layer)
-        tracker = CellTracker(path_public, raw_image)
+        tracker = CellTracker(Path(animal_path).name, raw_image)
         ui_widget._controller = SegmentingController(viewer, ui_widget, folder_manager, segmenter, tracker)
 
     ui_widget.choose_folder_type.currentIndexChanged.connect(on_folder)

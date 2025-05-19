@@ -23,7 +23,8 @@ from qtpy.QtWidgets import (
     QWidget,
     QPushButton,
     QDockWidget,
-    QGridLayout
+    QGridLayout,
+    QDialog
 )
 import os
 from matplotlib import pyplot as plt
@@ -162,17 +163,17 @@ class CorrectionUI(QWidget):
         # self.checkbox_multiple_modif = QCheckBox("multiple modification")
         # self.general_draw_parameter.addWidget(self.checkbox_multiple_modif)
         # Further interface configurations
-        self.possible_shapes = ["Free Hand", "Line"]
+        self.possible_shapes = ["Free Hand", "Line", "Remove Segmentation"]
         self.shape = "Free Hand"
         self.combo_box_shape = QComboBox()
         for mode in self.possible_shapes:
             self.combo_box_shape.addItem(mode)
         self.general_draw_parameter.addWidget(self.combo_box_shape)
         # Add a checkbox for marking segmentation as complete
-        self.checkbox = QCheckBox("Completed Segmentation")
-        self.layout_complete_seg = QVBoxLayout()
-        self.layout_complete_seg.addWidget(self.checkbox)
-        self.general_draw_parameter.addLayout(self.layout_complete_seg)
+        # self.checkbox = QCheckBox("Completed Segmentation")
+        # self.layout_complete_seg = QVBoxLayout()
+        # self.layout_complete_seg.addWidget(self.checkbox)
+        # self.general_draw_parameter.addLayout(self.layout_complete_seg)
 
         # Additional setup (cell tracking and display)
         # self._show_widget_cell_tracking()
@@ -228,7 +229,10 @@ class CorrectionUI(QWidget):
         self.tracking_box_layout.addWidget(self.button_auto_correct)
 
     def switch_drawing_mode(self):
-        self.shape = "Line" if self.shape == "Free Hand" else "Free Hand"
+        idx = self.possible_shapes.index(self.shape)
+        # passe à l’indice suivant (avec wrap-around)
+        self.shape = self.possible_shapes[(idx + 1) % len(self.possible_shapes)]
+        # mets à jour la combo
         self.combo_box_shape.setCurrentText(self.shape)
     
     # def init_slider(self, max_range, name):
@@ -288,41 +292,48 @@ class AutoCorrectDialog(QDialog):
         self._qt_window.setWindowFlags(Qt.Widget)
         self.first_show = True
 
+        menu_bar = self._qt_window.menuBar()
+        if menu_bar:
+            menu_bar.hide()
         # Initially hide dock widgets (controls)
         for dock in self._qt_window.findChildren(QDockWidget):
             dock.hide()
 
-        title_widget = QWidget()
-        title_grid = QGridLayout()
-        title_grid.setContentsMargins(0, 0, 0, 0)
-        title_grid.setColumnStretch(0, 1)
-        title_grid.setColumnStretch(1, 1)
-        lbl_left = QLabel("Potential Fraud")
-        lbl_left.setAlignment(Qt.AlignCenter)
-        lbl_right = QLabel("Correction Suggested")
-        lbl_right.setAlignment(Qt.AlignCenter)
-        title_grid.addWidget(lbl_left, 0, 0)
-        title_grid.addWidget(lbl_right, 0, 1)
-        title_widget.setLayout(title_grid)
-        self.viewer.window.add_dock_widget(title_widget, area="top", name="titles")
+        self.title_widget = QWidget()
+        self.title_grid = QGridLayout()
+        self.title_grid.setContentsMargins(0, 0, 0, 0)
+        self.title_grid.setColumnStretch(0, 1)
+        self.title_grid.setColumnStretch(1, 1)
+        self.lbl_left = QLabel("Potential Fraud")
+        self.lbl_left.setAlignment(Qt.AlignCenter)
+        self.lbl_right = QLabel("Correction Suggested")
+        self.lbl_right.setAlignment(Qt.AlignCenter)
+        self.title_grid.addWidget(self.lbl_left, 0, 0)
+        self.title_grid.addWidget(self.lbl_right, 0, 1)
+        self.title_widget.setLayout(self.title_grid)
+
+         # Bottom status label under slider
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
 
         # Buttons
-        self.btn_accept = QPushButton("Accept correction")
-        self.btn_draw   = QPushButton("Redraw")
         self.btn_reject = QPushButton("Refuse")
-        self.btn_accept.clicked.connect(self.on_accept)
-        self.btn_draw.clicked.connect(self.on_redraw)
+        self.btn_draw   = QPushButton("Redraw")
+        self.btn_accept = QPushButton("Accept correction")
         self.btn_reject.clicked.connect(self.on_reject)
+        self.btn_draw.clicked.connect(self.on_redraw)
+        self.btn_accept.clicked.connect(self.on_accept)
 
         # Layout
         btn_layout = QHBoxLayout()
-        btn_layout.addWidget(self.btn_accept)
-        btn_layout.addWidget(self.btn_draw)
         btn_layout.addWidget(self.btn_reject)
-
-
+        btn_layout.addWidget(self.btn_draw)
+        btn_layout.addWidget(self.btn_accept)
+        
         main_layout = QVBoxLayout()
+        main_layout.addWidget(self.title_widget)
         main_layout.addWidget(self._qt_window)
+        main_layout.addWidget(self.status_label)
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
         self.setWindowTitle("AutoCorrection Napari")
@@ -344,49 +355,48 @@ class AutoCorrectDialog(QDialog):
         # for layer in list(self.viewer.layers):
         #     self.viewer.layers.remove(layer)
 
-        raw, labels, fraud, outlines, t_min, t_max, t = self.frauds[self.current_index]
+        raw, labels, labels_corrected, fraud, outlines, outlines_corrected, t_min, t_max, t = self.frauds[self.current_index]
+        channel_in_raw = raw.shape[1]
         if self.first_show:
+            
             self.first_show = False
-        # premier passage : on construit les 5 layers
-            self.raw_left   = self.viewer.add_image(raw,   name="raw_left")
-            self.labels_layer_left= self.viewer.add_labels(labels, name="labels_left", opacity=0.25)
-            self.outlines_layer_left  = self.viewer.add_labels(outlines, name="outlines_left")
-            self.outlines_layer_left.visible = False
 
-            self.raw_right   = self.viewer.add_image(raw,   name="raw_right")
-            self.labels_layer_right= self.viewer.add_labels(labels, name="labels_right", opacity=0.25)
-            self.outlines_layer_right  = self.viewer.add_labels(outlines, name="outlines_right")
-            self.outlines_layer_right.visible = False
+            self.raw_left = self.viewer.add_image(np.array(raw), name="raw_left", channel_axis = 1)
+            self.labels_layer_left= self.viewer.add_labels(labels, name="labels_left", opacity=0.4)
+            self.outlines_layer_left  = self.viewer.add_labels(outlines, name="outlines_left")
+
+            self.raw_right = self.viewer.add_image(np.array(raw), name="raw_right", channel_axis = 1)
+            self.labels_layer_right= self.viewer.add_labels(labels_corrected, name="labels_corrected", opacity=0.4)
+            self.outlines_layer_right  = self.viewer.add_labels(outlines_corrected, name="outlines_corrected")
 
             self.fraud_layer = self.viewer.add_labels((fraud>0).astype(np.uint8),
-                                                    name="Fraud",
+                                                    name="Fake_div",
                                                     colormap={0:(0,0,0,0),1:"red"},
                                                     opacity=1.0)
             self.fraud_layer.contour = 3
 
-            # grid + dims une seule fois
             self.viewer.grid.enabled = True
-            self.viewer.grid.stride  = -3
+            self.viewer.grid.stride  = -2 -channel_in_raw
             self.viewer.grid.shape   = (1,2)
 
         else:
             # mises à jour rapides des data arrays
-            self.raw_left.data    = raw
+            self.raw_left[0].data = raw[:,0]
+            self.raw_left[1].data = raw[:,1]
             self.labels_layer_left.data = labels
             self.outlines_layer_left.data   = outlines
 
-            self.raw_right.data    = raw
-            self.labels_layer_right.data = labels
-            self.outlines_layer_right.data   = outlines
+            self.raw_right[0].data = raw[:,0]
+            self.raw_right[1].data = raw[:,1]
+            self.labels_layer_right.data = labels_corrected
+            self.outlines_layer_right.data   = outlines_corrected
 
             self.fraud_layer.data  = (fraud>0).astype(np.uint8)
         
         self.fraud_layer.contour = 3
+        self.status_label.setText(f"Displaying frames {t_min} to {t_max}")
+        self.lbl_left.setText(f"Potential fake division {self.current_index}/{len(self.frauds)}")
         
-        # Enable grid and set layout to 1 row, 2 columns
-        self.viewer.grid.enabled = True
-        self.viewer.grid.stride = -3
-        self.viewer.grid.shape = (1, 2)
         # Mark layers to show in grid
         self.viewer.dims.set_point(0,t)
 
@@ -417,8 +427,58 @@ class AutoCorrectDialog(QDialog):
         self.current_index += 1
         if self.current_index < len(self.frauds):
             for dock in self._qt_window.findChildren(QDockWidget):
-                dock.hide()
+                title = dock.windowTitle()
+                if (title != "frames") and (title != "titles"):
+                    dock.hide()
+            for layer in list(self.viewer.layers):
+                layer.visible = True
             self._show_current()
         else:
             print("No more frauds, closing dialog.")
             self.accept()
+
+
+class TrackingChoiceDialog(QDialog):
+    """
+    Boîte de dialogue pour gérer la présence d'un prédiction existante.
+    Retourne:
+      - "reuse"   si l'utilisateur veut réutiliser le fichier existant
+      - "rerun"   si l'utilisateur veut ré-exécuter et écraser
+      - "cancel"  s'il annule
+    """
+    def __init__(self, parent=None, pred_path=""):
+        super().__init__(parent)
+        self.setWindowTitle("Tracking already exists")
+        self.setWindowModality(Qt.ApplicationModal)
+
+        # Message principal
+        label = QLabel(
+            f"Le fichier de tracking existe déjà à :\n{pred_path}"
+        )
+        label.setWordWrap(True)
+
+        # Boutons
+        btn_rerun  = QPushButton("Re-run")
+        btn_cancel = QPushButton("Annuler")
+
+        btn_rerun.clicked.connect(self._rerun)
+        btn_cancel.clicked.connect(self._cancel)
+
+        # Layout
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(btn_rerun)
+        btn_layout.addWidget(btn_cancel)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(label)
+        main_layout.addLayout(btn_layout)
+
+        self.choice = None
+
+    def _rerun(self):
+        self.choice = "rerun"
+        self.accept()   # ferme le dialog avec Accepted
+
+    def _cancel(self):
+        self.choice = "cancel"
+        self.reject()

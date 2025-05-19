@@ -6,13 +6,16 @@ import os
 from pathlib import Path
 from tqdm import tqdm
 from warnings import warn
+import getpass
+import zarr
+from zarr.storage import DirectoryStore
 
 import os, subprocess, skimage.io, pickle
 from pathlib import Path
 
 class CellTracker:
-    def __init__(self, public_path: Path, raw_image):
-        self.public_path = public_path
+    def __init__(self, name_animal, raw_image):
+        self.name_animal = name_animal
         self.image = raw_image
         self.cell_lineage = None
         self.event = None
@@ -28,11 +31,8 @@ class CellTracker:
     def get_relabeled(self):
         return self.relabeled_stuff
 
-    def run(self, labels: np.ndarray):
-        
-        skimage.io.imsave(self.public_path / "image.tif", self.image[:, 0])
-        skimage.io.imsave(self.public_path / "labels.tif", labels)
-        
+    def run(self, labels):
+                
         if os.environ.get("USER") == "nexton":
 
             command = (
@@ -52,35 +52,45 @@ class CellTracker:
                 "10.50.11.184",
                 "nexton",
                 os.environ.get("nexton_password"),
-                "/home/nexton/Documents/trackastra-fusion/use_this_file.py",
-                str(self.public_path / "image.tif"),
-                str(self.public_path / "labels.tif"),
+                "/home/nexton/Documents/trackastra-fusion/use_this_file_zarr.py",
+                self.image,
+                labels,
+                self.name_animal
             )
-        self.cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
+        return predictions
     
-    def visualize_tracking_events(self, labels):
-        if os.path.exists(Path(self.public_path) / "cell_lineage_matlab.pkl"):
-            with open(Path(self.public_path) / "cell_lineage_matlab.pkl", "rb") as f:
-                self.cell_lineage = pickle.load(f)
-            self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
-        # if os.path.exists(Path(animal_path) / "cell_lineage.pkl"):
-        #     with open(Path(animal_path) / "cell_lineage.pkl", "rb") as f:
-        #         self.cell_lineage = pickle.load(f)
+    
+    def visualize_tracking_events(self, predictions, labels):
+        
+        self.cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
+        self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
 
-        elif os.path.exists(Path(self.public_path) / "pred.pkl"):
-            with open(Path(self.public_path) / "pred.pkl", "rb") as f:
-                predictions = pickle.load(f)
-            self.cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
-            with open(Path(self.public_path) / "cell_lineage.pkl", "wb") as f:
-                pickle.dump(self.cell_lineage, f)
-            # exit(0)
-            self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
-            
         if self.cell_lineage is None:
             warn("No cell lineage found, run cell tracking first")
             return
-        self.event, self.event_dictionnary = label_events(self.cell_lineage, labels)
-        return self.relabeled_stuff, self.event_dictionnary
+        # self.event, self.event_dictionnary = label_events(self.cell_lineage, labels)
+        self.event, self.event_dictionnary = label_fake_div(self.cell_lineage, labels)
+        return self.relabeled_stuff, self.event_dictionnary, self.cell_lineage
+
+        # if os.path.exists(Path(self.public_path) / "cell_lineage_matlab.pkl"):
+        #     with open(Path(self.public_path) / "cell_lineage_matlab.pkl", "rb") as f:
+        #         self.cell_lineage = pickle.load(f)
+        #     self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
+
+        # if os.path.exists(Path(self.public_path) / "cell_lineage.pkl"):
+        #     with open(Path(self.public_path) / "cell_lineage.pkl", "rb") as f:
+        #         self.cell_lineage = pickle.load(f)
+        #         self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
+
+        # elif os.path.exists(Path(self.public_path) / "pred.pkl"):
+        #     with open(Path(self.public_path) / "pred.pkl", "rb") as f:
+        #         predictions = pickle.load(f)
+        #     self.cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
+        #     with open(Path(self.public_path) / "cell_lineage.pkl", "wb") as f:
+        #         pickle.dump(self.cell_lineage, f)
+        #     # exit(0)
+        # #     self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
+            
 
 
 def assign_lineage_ids(graph, all_nodes):
@@ -233,14 +243,60 @@ def run_remote_tracking(
     user,
     password,
     remote_script_path,
-    arg1,
-    arg2,
+    raw,
+    labels,
+    name_animal
 ):
+    local_user = getpass.getuser()
+    remote_base = Path(remote_script_path).parent.parent / "remote_tracking"
+    remote_user_dir = remote_base / local_user
+
+    # 1) SSH + SFTP
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(host, username=user, password=password)
+    sftp = client.open_sftp()
 
-    command = f"/home/nexton/miniforge-pypy3/envs/trackastra/bin/python {remote_script_path} {arg1} {arg2}"
+    try:
+        # mkdir -p remote_user_dir
+        sftp.mkdir(str(remote_user_dir))
+    except IOError:
+        pass
+
+    from zarr.storage import FSStore
+
+    path_store = 'ssh://nexton@10.50.11.184' +str(remote_user_dir)
+    print(path_store)
+    store = FSStore(
+        path_store,
+        host= '10.50.11.184',
+        username= 'nexton',
+        password= os.environ.get("nexton_password")
+        
+    )
+    root = zarr.open_group(store=store, mode='r+')
+
+    animal = root.require_group(name_animal)
+
+    image_group  = animal.require_group('IMAGE')
+    d2_group = image_group.require_group('D2')
+
+    d2_group.create_dataset(
+        name='raw',
+        data=raw,
+        chunks=(1,) + raw.shape[1:],
+        overwrite=True
+    )
+
+    d2_group.create_dataset(
+        name='label',
+        data=labels,
+        chunks=(1,) + labels.shape[1:],
+        overwrite=True
+    )
+    
+    path_animal = remote_user_dir / name_animal
+    command = f"/home/nexton/miniforge-pypy3/envs/trackastra/bin/python {remote_script_path} {path_animal}"
     stdin, stdout, stderr = client.exec_command(command)
 
     # Read and decode stdout/stderr while command executes
@@ -270,25 +326,12 @@ def run_remote_tracking(
 
     # Fetch the predictions file
     sftp = client.open_sftp()
-    path_public = os.environ.get("path_public")
-    print('path_public')
-    remote_pred_path = Path(arg1).parent / "pred.pkl"
-    local_pred_path = Path(arg1).parent / f"{Path(arg1).stem}_pred.pkl"
-
-    try:
-        sftp.get(str(remote_pred_path), str(local_pred_path))
-        print(f"Downloaded predictions to {local_pred_path}")
-    except FileNotFoundError as e:
-        print(f"Error: Could not find remote predictions file {remote_pred_path}")
-        raise e
-    finally:
-        sftp.close()
-        client.close()
+    remote_pred_path = path_animal / "pred.pkl"
 
     # Load and return predictions locally
     import pickle
 
-    with open(local_pred_path, "rb") as f:
+    with sftp.open(str(remote_pred_path), "rb") as f:
         predictions = pickle.load(f)
 
     return predictions
@@ -491,6 +534,8 @@ def nodes_to_event(graph):
     nodes_to_plot_case_5 = []
     nodes_to_plot_case_6 = []
     nodes_to_plot_case_7 = []
+    nodes_to_plot_case_8 = []
+    fake_divisions = []
     delamination = []
     new_cells = []
     divisions = []
@@ -501,6 +546,14 @@ def nodes_to_event(graph):
     for node in tqdm(graph.nodes()):
         successors = get_direct_successors(graph, node)
         predecessors = get_direct_predecessors(graph, node)
+
+        if (len(successors) == 0) and (len(predecessors)==1):
+            if node[0] < max_time:
+                predecessor = predecessors[0]
+                predecessor_successors = get_direct_successors(graph,predecessor)
+                if len(predecessor_successors)==2:
+                    fake_divisions.append(predecessor_successors)
+
 
         # Case 4: Node has more than 2 successors
         if len(successors) > 2:
@@ -518,6 +571,15 @@ def nodes_to_event(graph):
             for successor in successors:
                 successor_successors = get_direct_successors(graph, successor)
 
+                if len(predecessors) == 1:
+                    middle = predecessors[0]
+                    predecessors_predecessors = get_direct_predecessors(graph, middle)
+                    if len(predecessors_predecessors)==2:
+                        nodes_to_plot_case_8.append(node)
+                        # si tu veux suivre le passé frauduleux :
+                        past_frauds.append(predecessors[0])
+                        continue
+
                 # Case 1: One successor has no successors
                 if len(successor_successors) == 0:
                     nodes_to_plot_case_1.append(node)
@@ -525,6 +587,7 @@ def nodes_to_event(graph):
                         past_frauds.append(predecessors[0])
                     is_division = False
                     break
+
 
                 # Case 2: One successor has 2 successors
                 elif len(successor_successors) == 2:
@@ -545,7 +608,7 @@ def nodes_to_event(graph):
 
             if is_division:
                 divisions.append(node)
-
+        
         # Case 5: Node has no direct successors but has successors in next frame
         elif len(successors) == 0 and len(list(graph.successors(node))) > 0:
             nodes_to_plot_case_5.append(node)
@@ -614,6 +677,7 @@ def nodes_to_event(graph):
         "new_cells": new_cells,
         "frauds": fraud_nodes,
         "past_frauds": past_frauds,
+        "fake_divisions": fake_divisions
     }
 
 
@@ -633,6 +697,39 @@ def label_events(cell_lineage, labels):
             mask = np.isin(labels[t], t_labels)
             events_labels[event_name][t][mask] = 1
 
+
     return events, events_labels
+
+def label_fake_div(cell_lineage, labels):
+    events = get_fake_division(cell_lineage)
+    events_labels = np.zeros_like(labels)
+    # Create boolean mask for all nodes at once
+    for nodes in events:
+        time_coords = np.array([node[0] for node in nodes])
+
+        label_values = np.array([node[1] for node in nodes])
+        # Use vectorized operations
+        for t in tqdm(np.unique(time_coords), total=len(np.unique(time_coords))):
+            t_mask = time_coords == t
+            t_labels = label_values[t_mask]
+            mask = np.isin(labels[t], t_labels)
+            events_labels[t][mask] = 1        
+    return events, events_labels
+
+def get_fake_division(graph):
+    max_time = max(node[0] for node in graph.nodes())
+    fake_divisions = []
+    for node in tqdm(graph.nodes()):
+        successors = get_direct_successors(graph, node)
+
+        if node[0] < max_time-1:
+            if (len(successors) == 2):
+                    successors_1 = get_direct_successors(graph,successors[0])
+                    successors_2 = get_direct_successors(graph,successors[1])
+                    if len(successors_1 + successors_2)==1:
+                        fake_divisions.append([successors[0], successors[1]])
+
+
+    return fake_divisions
 
 

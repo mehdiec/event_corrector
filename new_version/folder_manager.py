@@ -4,6 +4,8 @@ from tqdm import tqdm
 from functools import wraps
 import time
 from utils_new import masks_to_outlines
+import zarr
+import pickle
 
 def timing_decorator(func):
     """Decorator that prints the execution time of a function.
@@ -31,9 +33,13 @@ def timing_decorator(func):
 
 
 class FolderManager():
-    def __init__(self, animal):
-        self.image = animal.IMAGE.D2.raw
-        self.path_D2 = animal.IMAGE.D2
+    def __init__(self, animal_path):
+        self.animal_path = animal_path
+        self.pred_path = self.animal_path / "pred.pkl"
+        self.lineage_path = self.animal_path / "cell_lineage.pkl"
+        self.animal = zarr.open(animal_path)
+        self.image = self.animal.IMAGE.D2.raw
+        self.path_D2 = self.animal.IMAGE.D2
         self.labels = None
         self.skeleton_store = None
         self.completed_store = None
@@ -100,4 +106,33 @@ class FolderManager():
             self.skeleton_store[:] = outlines_layer
         else:
             print("Impossible to save")
+
+    def check_for_pred(self, get = False):
+        if not self.pred_path.exists():
+            return None
+        else:
+            if get:
+                with open(self.pred_path, "rb") as f:
+                    predictions = pickle.load(f)
+                return self.pred_path, predictions
+            else:
+                return self.pred_path
+        
+    def save_preds(self, predictions):
+        print(f"Saving predictions of tracking in {self.pred_path}")
+        try:
+            with open(self.pred_path, "wb") as f:
+                pickle.dump(predictions, f)
+            print(f"Predictions saved successfully to {self.pred_path}")
+        except Exception as e:
+            print(f"Error saving predictions: {e}")
+            raise
+
+    def save_cell_lineage(self, cell_lineage):
+        try:
+            with open(self.lineage_path, "wb") as f:
+                pickle.dump(cell_lineage, f)
+        except Exception as e:
+            print(f"Error saving predictions: {e}")
+            raise
 
