@@ -102,7 +102,6 @@ class Segmenter:
     
     def set_shape(self, shape):
         self.shape = shape
-        print(self.shape)
         
     def clean_holes(self, size_holes):
         for i in range(self.labels_layer.data.shape[0]):
@@ -334,10 +333,8 @@ class Segmenter:
                 y1, x1 = event.position[1:]
 
                 self.drawing.data = [[(y0, x0), (y1, x1)]]
-                print(y0, x0, y1, x1)
 
                 if not self.drawing.shape_type == "rectangle":
-                    print(self.drawing.shape_type)
                     self.drawing.shape_type = "rectangle"
 
                 # napari rectangle data attend [[y, x, height, width]]
@@ -602,7 +599,7 @@ class Segmenter:
             self.history_manager.add_state(
                 0, (self.slider_pos, x_min, y_min, x_max, y_max), before, after
             )
-            
+
             self.outlines_layer.refresh()
             self.labels_layer.refresh()
 
