@@ -4,17 +4,6 @@ import skimage
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QSpinBox,
-    QComboBox,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QSlider,
-    QVBoxLayout,
-    QWidget,
-    QPushButton,
 )
 from utils_new import (
     masks_to_outlines,
@@ -25,7 +14,6 @@ from utils_new import (
 from skimage.measure import label as cc_label
 import numpy as np
 from skimage.draw import line
-import matplotlib.pyplot as plt
 
 
 class HistoryManager:
@@ -552,7 +540,7 @@ class Segmenter:
 
     def remove_segmentation(self):
         if len(self.drawing.data[0]) > 0:
-            ys, xs = self.drawing.data[self.slider_pos][:,0], self.drawing.data[self.slider_pos][:,1]
+            ys, xs = self.drawing.data[0][:,0], self.drawing.data[0][:,1]
             ys = np.array(ys, dtype=int)
             xs = np.array(xs, dtype=int)
             shape = self.labels_layer.data[self.slider_pos].shape
@@ -562,11 +550,6 @@ class Segmenter:
             label_values = self.labels_layer.data[self.slider_pos][y_min:y_max, x_min:x_max]
             # Each unique labels
             uniques = np.unique(label_values)
-            # y_min, y_max, x_min, x_max=get_bounding_box_from_labels(
-            #     self.labels_layer.data[self.slider_pos],
-            #     uniques
-            # )
-
             y_min, y_max = max(min(ys)-50,0), min(max(ys)+50,h-1)
             x_min, x_max = max(min(xs)-50,0), min(max(xs)+50,w-1)
             
