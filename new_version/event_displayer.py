@@ -1,3 +1,6 @@
+import csv
+import os
+
 import numpy as np
 from pyanimalprocessing.plotting import plot_property
 
@@ -52,6 +55,90 @@ class EventCorrector:
         )
         print("EventCorrector: Event handlers connected.")  # Debug print
 
+    def _save_points_to_csv(self, points_layer, filename):
+        """Saves 3D points data from a layer to a CSV file.
+
+        This method is specifically designed for 3D points layers as used for
+        corrected apoptosis and division events in this class.
+        The CSV file is saved in the parent directory of the animal's Zarr store.
+        """
+        if (
+            points_layer is None
+            or points_layer.data is None
+            or len(points_layer.data) == 0
+        ):
+            # Using points_layer.name if available for better logging
+            layer_name = (
+                points_layer.name
+                if hasattr(points_layer, "name") and points_layer.name
+                else "the layer"
+            )
+            print(f"EventCorrector: No data in {layer_name} to save to {filename}.")
+            return
+
+        if points_layer.ndim != 3:
+            print(
+                f"EventCorrector: Warning: Expected 3D points layer for saving to CSV, \
+                  got {points_layer.ndim}D for layer '{points_layer.name}'. \
+                  Skipping save for {filename}."
+            )
+            return
+
+        try:
+            # self.animal is a zarr group, self.animal.store is the Zarr store object,
+            # and self.animal.store.path is its filesystem path (can be a file or directory).
+            store_filesystem_path = self.animal.store.path
+        except AttributeError:
+            print(
+                "EventCorrector: Critical Error: self.animal.store.path not found. \
+                  Cannot determine save location for CSV. Please check animal object."
+            )
+            return
+
+        # Save CSV in the same directory AS the Zarr store file/directory.
+        # e.g., if store is /path/to/data/myanimal.zarr, CSV is /path/to/data/filename.csv
+        # e.g., if store is /path/to/data/myanimal_zarr_dir/, CSV is /path/to/data/filename.csv
+        parent_dir_of_store = os.path.dirname(store_filesystem_path)
+        save_path = os.path.join(
+            parent_dir_of_store, self.animal.attrs["name"], filename
+        )
+
+        # Ensure the target directory (parent_dir_of_store) exists.
+        # This directory should ideally always exist as it contains the Zarr store.
+        try:
+            os.makedirs(parent_dir_of_store, exist_ok=True)
+        except OSError as e:
+            print(
+                f"EventCorrector: Error creating directory {parent_dir_of_store}: {e}. \
+                  Cannot save {filename}."
+            )
+            return
+
+        points_data = points_layer.data
+        # Header for 3D points, consistent with previous use for ndim=3.
+        # 't' might represent a slice index or first spatial dim like 'z'.
+        header = ["t", "y", "x"]
+
+        try:
+            with open(save_path, "w", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(header)
+                writer.writerows(points_data)
+            layer_name = (
+                points_layer.name
+                if hasattr(points_layer, "name") and points_layer.name
+                else "the layer"
+            )
+            print(
+                f"EventCorrector: Saved {len(points_data)} points from {layer_name} to {save_path}"
+            )
+        except IOError as e:
+            print(f"EventCorrector: Error writing to CSV file {save_path}: {e}")
+        except Exception as e:
+            print(
+                f"EventCorrector: An unexpected error occurred while writing {save_path}: {e}"
+            )
+
     def display_layers(self):
 
         plot_property(
@@ -96,6 +183,9 @@ class EventCorrector:
         self._update_point_symbols(
             self.corrected_apoptosis_pts_layer, self.apoptosis_layer
         )
+        self._save_points_to_csv(
+            self.corrected_apoptosis_pts_layer, "apoptosis_correction.csv"
+        )
 
     def _on_corrected_divisions_data_change(self, event=None):
         print(
@@ -103,6 +193,9 @@ class EventCorrector:
         )  # Debug print
         self._update_point_symbols(
             self.corrected_divisions_pts_layer, self.divisions_layer
+        )
+        self._save_points_to_csv(
+            self.corrected_divisions_pts_layer, "divisions_correction.csv"
         )
 
     def _update_point_symbols(

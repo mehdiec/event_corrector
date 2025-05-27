@@ -48,6 +48,7 @@ def init(viewer: napari.Viewer, animal_path):
         # outlines = folder_manager.ensure_skeleton_exists(current_folder)
         labels = folder_manager.get_labels(current_folder)
         labels_layer = viewer.add_labels(labels, name=current_folder)
+        labels_layer.visible = False
         # outlines_layer = viewer.add_labels(outlines, name=f"outlines_{current_folder}")
 
         # segmenter = Segmenter(viewer, labels_layer, outlines_layer)
