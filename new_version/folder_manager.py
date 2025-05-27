@@ -1,24 +1,25 @@
-import time
-import numpy as np
-from tqdm import tqdm
-from functools import wraps
-import time
-from utils_new import masks_to_outlines
-import zarr
 import pickle
+import time
+from functools import wraps
+
+import numpy as np
+import zarr
+from tqdm import tqdm
+from utils_new import masks_to_outlines
+
 
 def timing_decorator(func):
     """Decorator that prints the execution time of a function.
 
-    Parameters
-    ----------
-    func : callable
-        The function to be timed
--
-    Returns
-    -------
-    wrapper : callable
-        The wrapped function that prints timing information
+        Parameters
+        ----------
+        func : callable
+            The function to be timed
+    -
+        Returns
+        -------
+        wrapper : callable
+            The wrapped function that prints timing information
     """
 
     @wraps(func)
@@ -32,7 +33,7 @@ def timing_decorator(func):
     return wrapper
 
 
-class FolderManager():
+class FolderManager:
     def __init__(self, animal_path):
         self.animal_path = animal_path
         self.pred_path = self.animal_path / "pred.pkl"
@@ -46,12 +47,24 @@ class FolderManager():
 
     def get_subkeys(self):
         return list(self.path_D2.keys())
-    
+
     def get_raw_image(self):
         return self.image
-    
+
     def get_labels(self, current_folder):
         return self.path_D2[current_folder][:].copy()
+
+    def get_apoptosis(self):
+        return self.animal.CELL.D2.apoptosis[:].copy()
+
+    def get_divisions(self):
+        return self.animal.CELL.D2.divisions[:].copy()
+
+    def get_coords(self):
+        return self.animal.CELL.D2.coords[:].copy()
+
+    def get_lagrangian_coords(self):
+        return self.animal.GRID.LAGRANGIAN_PIV.GRID_PROPERTIES.lagrangian_grid[:].copy()
 
     @timing_decorator
     def ensure_backup_exists(self, current_folder):
@@ -60,7 +73,7 @@ class FolderManager():
         """
         self.labels = self.path_D2[current_folder]
         data = self.labels[:]
-        
+
         if f"{current_folder}_backup" not in self.path_D2:
             print("No back-up found, creating one ...")
             self.path_D2.create_dataset(
@@ -84,7 +97,9 @@ class FolderManager():
         """
         data = self.labels[:]
         if f"{current_folder}_skeleton" not in self.path_D2:
-            print(f"{current_folder} skeleton not found in Zarr — generating outlines...")
+            print(
+                f"{current_folder} skeleton not found in Zarr — generating outlines..."
+            )
             self.path_D2.create_dataset(
                 name=f"{current_folder}_skeleton",
                 shape=data.shape,
@@ -107,7 +122,7 @@ class FolderManager():
         else:
             print("Impossible to save")
 
-    def check_for_pred(self, get = False):
+    def check_for_pred(self, get=False):
         if not self.pred_path.exists():
             return None
         else:
@@ -117,7 +132,7 @@ class FolderManager():
                 return self.pred_path, predictions
             else:
                 return self.pred_path
-        
+
     def save_preds(self, predictions):
         print(f"Saving predictions of tracking in {self.pred_path}")
         try:
@@ -135,4 +150,3 @@ class FolderManager():
         except Exception as e:
             print(f"Error saving predictions: {e}")
             raise
-
