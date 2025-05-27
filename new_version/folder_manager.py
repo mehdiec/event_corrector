@@ -54,18 +54,6 @@ class FolderManager:
     def get_labels(self, current_folder):
         return self.path_D2[current_folder][:].copy()
 
-    def get_apoptosis(self):
-        return self.animal.CELL.D2.apoptosis[:].copy()
-
-    def get_divisions(self):
-        return self.animal.CELL.D2.divisions[:].copy()
-
-    def get_coords(self):
-        return self.animal.CELL.D2.coords[:].copy()
-
-    def get_lagrangian_coords(self):
-        return self.animal.GRID.LAGRANGIAN_PIV.GRID_PROPERTIES.lagrangian_grid[:].copy()
-
     @timing_decorator
     def ensure_backup_exists(self, current_folder):
         """

@@ -8,24 +8,20 @@ from pyanimalprocessing.plotting import plot_property
 
 
 class EventCorrector:
-    def __init__(
-        self,
-        viewer,
-        apoptosis_layer,  # Napari image layer for intersection checks & property display
-        divisions_layer,  # Napari image layer for intersection checks & property display
-        coords_layer,  # Napari points layer for displaying original properties
-        lagrangian_coords_layer,  # Napari points layer
-    ):
+    def __init__(self, viewer, animal):
         self.viewer = viewer
-        self.apoptosis_layer = apoptosis_layer
-        self.divisions_layer = divisions_layer
-        self.coords_layer = coords_layer
-        self.lagrangian_coords_layer = lagrangian_coords_layer
+        self.animal = animal
         self.self_roi_number = self.create_roi_number()
 
+        self.display_layers()
+
         # Determine ndim for points layers from the source image layers
-        apoptosis_ndim = getattr(self.apoptosis_layer, "ndim", 3)
-        divisions_ndim = getattr(self.divisions_layer, "ndim", 3)
+        apoptosis_ndim = 3
+        divisions_ndim = 3
+
+        # Retrieve apoptosis and divisions layers
+        self.apoptosis_layer = self.viewer.layers["apoptosis"]
+        self.divisions_layer = self.viewer.layers["divisions"]
 
         # Create new points layers for corrected events
         self.corrected_apoptosis_pts_layer = self.viewer.add_points(
@@ -54,47 +50,57 @@ class EventCorrector:
         self.corrected_divisions_pts_layer.events.data.connect(
             self._on_corrected_divisions_data_change
         )
-
-        self.display_layers()
+        print("EventCorrector: Event handlers connected.")  # Debug print
 
     def display_layers(self):
-        if self.apoptosis_layer and self.coords_layer:
-            plot_property(
-                self.apoptosis_layer,
-                self.coords_layer,
-                self.viewer,
-                property_name="apoptosis",
-            )
-        if self.divisions_layer and self.coords_layer:
-            plot_property(
-                self.divisions_layer,
-                self.coords_layer,
-                self.viewer,
-                property_name="divisions",
-            )
-        if self.lagrangian_coords_layer and len(self.self_roi_number) > 0:
-            plot_property(
-                self.self_roi_number,
-                self.lagrangian_coords_layer,
-                self.viewer,
-                property_name="lagrangian_coords",
-            )
+
+        plot_property(
+            self.animal.CELL.D2.apoptosis,
+            self.animal.CELL.D2.coords,
+            viewer=self.viewer,
+            property_name="apoptosis",
+        )
+        # Set colormap for apoptosis layer
+        if "apoptosis" in self.viewer.layers:
+            self.viewer.layers["apoptosis"].colormap = "darkblue"
+            self.viewer.layers["apoptosis"].blending = "additive"
+
+        plot_property(
+            self.animal.CELL.D2.divisions,
+            self.animal.CELL.D2.coords,
+            viewer=self.viewer,
+            property_name="divisions",
+        )
+        # Set colormap for divisions layer
+        if "divisions" in self.viewer.layers:
+            self.viewer.layers["divisions"].colormap = "green"
+            self.viewer.layers["divisions"].blending = "additive"
+
+        plot_property(
+            self.self_roi_number,
+            self.animal.GRID.LAGRANGIAN_PIV.GRID_PROPERTIES.lagrangian_grid,
+            viewer=self.viewer,
+            property_name="lagrangian_coords",
+        )
 
     def create_roi_number(self):
-        if (
-            self.lagrangian_coords_layer is not None
-            and self.lagrangian_coords_layer.data is not None
-            and len(self.lagrangian_coords_layer.data) > 0
-        ):
-            return np.ones(len(self.lagrangian_coords_layer.data))
-        return np.array([])
+
+        return np.ones(
+            self.animal.GRID.LAGRANGIAN_PIV.GRID_PROPERTIES.lagrangian_grid.shape
+        )[:, np.newaxis, ..., np.newaxis].astype(np.uint8)
 
     def _on_corrected_apoptosis_data_change(self, event=None):
+        print(
+            "EventCorrector: _on_corrected_apoptosis_data_change triggered."
+        )  # Debug print
         self._update_point_symbols(
             self.corrected_apoptosis_pts_layer, self.apoptosis_layer
         )
 
     def _on_corrected_divisions_data_change(self, event=None):
+        print(
+            "EventCorrector: _on_corrected_divisions_data_change triggered."
+        )  # Debug print
         self._update_point_symbols(
             self.corrected_divisions_pts_layer, self.divisions_layer
         )
@@ -119,6 +125,7 @@ class EventCorrector:
         new_symbols = []
 
         for point_world_coords in points_data:
+            print(f"New point world coordinates: {point_world_coords}")  # Debug print
             try:
                 point_voxel_coords_float = source_image_layer_for_check.world_to_data(
                     point_world_coords
@@ -127,6 +134,7 @@ class EventCorrector:
                 point_voxel_coords_float = point_world_coords
 
             rounded_voxel_coords = np.round(point_voxel_coords_float).astype(int)
+            print(f"Rounded voxel coordinates: {rounded_voxel_coords}")  # Debug print
 
             if len(rounded_voxel_coords) > len(image_shape):
                 rounded_voxel_coords = rounded_voxel_coords[-len(image_shape) :]
@@ -143,9 +151,14 @@ class EventCorrector:
             symbol_to_set = "disc"
             if valid_indices:
                 try:
-                    if image_data_np[tuple(rounded_voxel_coords)] == 1:
+                    value_at_coords = image_data_np[tuple(rounded_voxel_coords)]
+                    print(
+                        f"Value at {rounded_voxel_coords} in source image: {value_at_coords}"
+                    )  # Debug print
+                    if value_at_coords == 1:
                         symbol_to_set = "cross"
                 except IndexError:
+                    print(f"IndexError at {rounded_voxel_coords}")  # Debug print
                     pass
 
             new_symbols.append(symbol_to_set)

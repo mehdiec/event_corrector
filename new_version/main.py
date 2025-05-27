@@ -44,29 +44,21 @@ def init(viewer: napari.Viewer, animal_path):
             if "raw" not in layer.name:
                 viewer.layers.remove(layer)
 
-        folder_manager.ensure_backup_exists(current_folder)
-        outlines = folder_manager.ensure_skeleton_exists(current_folder)
+        # folder_manager.ensure_backup_exists(current_folder)
+        # outlines = folder_manager.ensure_skeleton_exists(current_folder)
         labels = folder_manager.get_labels(current_folder)
         labels_layer = viewer.add_labels(labels, name=current_folder)
-        outlines_layer = viewer.add_labels(outlines, name=f"outlines_{current_folder}")
+        # outlines_layer = viewer.add_labels(outlines, name=f"outlines_{current_folder}")
 
-        apoptosis_layer = folder_manager.get_apoptosis()
-        divisions_layer = folder_manager.get_divisions()
-        coords_layer = folder_manager.get_coords()
-        lagrangian_coords_layer = folder_manager.get_lagrangian_coords()
+        # segmenter = Segmenter(viewer, labels_layer, outlines_layer)
+        # tracker = CellTracker(Path(animal_path).name, raw_image)
+        # ui_widget._controller = SegmentingController(
+        #     viewer, ui_widget, folder_manager, segmenter, tracker
+        # )
 
-        segmenter = Segmenter(viewer, labels_layer, outlines_layer)
-        tracker = CellTracker(Path(animal_path).name, raw_image)
-        ui_widget._controller = SegmentingController(
-            viewer, ui_widget, folder_manager, segmenter, tracker
-        )
-
-        event_corrector = EventCorrector(
+        ui_widget.event_corrector = EventCorrector(
             viewer,
-            apoptosis_layer,
-            divisions_layer,
-            coords_layer,
-            lagrangian_coords_layer,
+            zarr.open(animal_path),
         )
 
     ui_widget.choose_folder_type.currentIndexChanged.connect(on_folder)
