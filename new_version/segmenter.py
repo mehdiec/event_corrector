@@ -78,6 +78,7 @@ class Segmenter:
         self.viewer.bind_key("C", self.clear_drawing, overwrite=True)
         self.viewer.bind_key("Control-Z", self.perform_undo, overwrite=True)
         self.viewer.bind_key("Control-Y", self.perform_redo, overwrite=True)
+        self.viewer.bind_key("V", self.change_labels_visibility, overwrite=True)
         self.viewer.bind_key("O", self.change_outlines_visibility, overwrite=True)
 
     def get_labels_layer(self):
@@ -91,7 +92,6 @@ class Segmenter:
     
     def set_shape(self, shape):
         self.shape = shape
- 
         
     def clean_holes(self, size_holes):
         for i in range(self.labels_layer.data.shape[0]):
@@ -296,7 +296,6 @@ class Segmenter:
                     self.viewer.mouse_drag_callbacks.append(self.update_drawing)
 
     def update_drawing(self, viewer, event):
-        
         if self.drawing_is_active:
             if self.shape == "Free Hand":
                 if self.drawing_is_active:
@@ -304,7 +303,6 @@ class Segmenter:
                     self.segmenting_path += [event.position[1:]]
                     self.drawing.data = [self.segmenting_path]
                 if not self.drawing.shape_type == "path":
-                    print("changing to path")
                     self.drawing.shape_type = "path"
                 # Set edge width to 2 pixels for thicker path
                 self.drawing.edge_width = 1
@@ -327,10 +325,7 @@ class Segmenter:
                 if not self.drawing.shape_type == "rectangle":
                     self.drawing.shape_type = "rectangle"
 
-                # napari rectangle data attend [[y, x, height, width]]
                 self.drawing.edge_width = 1
-
-
 
     def clear_drawing(self, viewer=None):
         if self.update_drawing in self.viewer.mouse_move_callbacks:
@@ -591,6 +586,10 @@ class Segmenter:
     def change_outlines_visibility(self, viewer):
         if self.outlines_layer is not None:
             self.outlines_layer.visible = not self.outlines_layer.visible  
+    
+    def change_labels_visibility(self, viewer):
+        if self.labels_layer is not None:
+            self.labels_layer.visible = not self.labels_layer.visible  
 
     def perform_undo(self, viewer):
         state = self.history_manager.undo()
