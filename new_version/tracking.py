@@ -1,51 +1,76 @@
+import getpass
+import os
+import pickle
+import subprocess
 from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import networkx as nx
 import numpy as np
 import paramiko
-import os
-from pathlib import Path
-from tqdm import tqdm
-from warnings import warn
-import getpass
 import zarr
-from zarr.storage import DirectoryStore
+from skimage.morphology import binary_dilation
+from skimage.segmentation import find_boundaries
+from tqdm import tqdm
 
-import os, subprocess, skimage.io, pickle
-from pathlib import Path
 
 class CellTracker:
     def __init__(self, name_animal, raw_image):
         self.name_animal = name_animal
         self.image = raw_image
-        self.cell_lineage = None
         self.event = None
         self.event_dictionnary = None
         self.relabeled_stuff = None
-    
+
     def get_event(self):
         return self.event
 
     def get_dict(self):
         return self.event_dictionnary
-    
+
     def get_relabeled(self):
         return self.relabeled_stuff
 
     def run(self, labels):
-                
         if os.environ.get("USER") == "nexton":
+            store = Path("/home/nexton/Documents/remote_tracking/nexton_user")
+            os.makedirs(store, exist_ok=True)
+
+            root = zarr.open_group(store=store, mode="r+")
+
+            animal = root.require_group(self.name_animal)
+
+            image_group = animal.require_group("IMAGE")
+            d2_group = image_group.require_group("D2")
+
+            d2_group.create_dataset(
+                name="raw",
+                data=self.image,
+                chunks=(1,) + self.image.shape[1:],
+                overwrite=True,
+            )
+
+            d2_group.create_dataset(
+                name="label",
+                data=labels,
+                chunks=(1,) + labels.shape[1:],
+                overwrite=True,
+            )
+
+            path_animal = store / self.name_animal
 
             command = (
                 f"/home/nexton/miniforge-pypy3/envs/trackastra/bin/python "
-                f"/home/nexton/Documents/trackastra-fusion/use_this_file.py "
-                f"{str(self.public_path / 'image.tif')} "
-                f"{str(self.public_path / 'labels.tif')}"
+                f"/home/nexton/Documents/trackastra-fusion/use_this_file_zarr.py "
+                f"{path_animal}"
             )
             subprocess.run(command, shell=True, check=True)
 
             # Load predictions from the output file
 
-            with open(self.public_path / "pred.pkl", "rb") as f:
+            with open(path_animal / "pred.pkl", "rb") as f:
                 predictions = pickle.load(f)
         else:
             predictions = run_remote_tracking(
@@ -55,42 +80,25 @@ class CellTracker:
                 "/home/nexton/Documents/trackastra-fusion/use_this_file_zarr.py",
                 self.image,
                 labels,
-                self.name_animal
+                self.name_animal,
             )
         return predictions
-    
-    
-    def visualize_tracking_events(self, predictions, labels):
-        
-        self.cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
-        self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
 
-        if self.cell_lineage is None:
-            warn("No cell lineage found, run cell tracking first")
-            return
-        # self.event, self.event_dictionnary = label_events(self.cell_lineage, labels)
-        self.event, self.event_dictionnary = label_fake_div(self.cell_lineage, labels)
-        return self.relabeled_stuff, self.event_dictionnary, self.cell_lineage
+    def run_cell_lineage(self, predictions, labels):
+        cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
+        print("Cell lineage done")
+        return cell_lineage
 
-        # if os.path.exists(Path(self.public_path) / "cell_lineage_matlab.pkl"):
-        #     with open(Path(self.public_path) / "cell_lineage_matlab.pkl", "rb") as f:
-        #         self.cell_lineage = pickle.load(f)
-        #     self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
 
-        # if os.path.exists(Path(self.public_path) / "cell_lineage.pkl"):
-        #     with open(Path(self.public_path) / "cell_lineage.pkl", "rb") as f:
-        #         self.cell_lineage = pickle.load(f)
-        #         self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
+    def visualize_tracking_events(self, cell_lineage, labels, depth_frames):
+        self.relabeled_stuff = relabel_image(labels, cell_lineage)
+        print("Relabelling done")
 
-        # elif os.path.exists(Path(self.public_path) / "pred.pkl"):
-        #     with open(Path(self.public_path) / "pred.pkl", "rb") as f:
-        #         predictions = pickle.load(f)
-        #     self.cell_lineage = prediction_to_cell_lineage(predictions, labels[:])
-        #     with open(Path(self.public_path) / "cell_lineage.pkl", "wb") as f:
-        #         pickle.dump(self.cell_lineage, f)
-        #     # exit(0)
-        # #     self.relabeled_stuff = relabel_image(labels, self.cell_lineage)
-            
+        events_graph, self.event, self.event_dictionnary = label_events(
+            cell_lineage, labels, depth_frames
+        )
+
+        return events_graph, self.relabeled_stuff, self.event_dictionnary
 
 
 def assign_lineage_ids(graph, all_nodes):
@@ -239,13 +247,7 @@ def relabel_image(all_labels, solution_graph):
 
 
 def run_remote_tracking(
-    host,
-    user,
-    password,
-    remote_script_path,
-    raw,
-    labels,
-    name_animal
+    host, user, password, remote_script_path, raw, labels, name_animal
 ):
     local_user = getpass.getuser()
     remote_base = Path(remote_script_path).parent.parent / "remote_tracking"
@@ -258,45 +260,37 @@ def run_remote_tracking(
     sftp = client.open_sftp()
 
     try:
-        # mkdir -p remote_user_dir
         sftp.mkdir(str(remote_user_dir))
     except IOError:
         pass
 
     from zarr.storage import FSStore
 
-    path_store = 'ssh://nexton@10.50.11.184' +str(remote_user_dir)
+    path_store = "ssh://nexton@10.50.11.184" + str(remote_user_dir)
     print(path_store)
     store = FSStore(
         path_store,
-        host= '10.50.11.184',
-        username= 'nexton',
-        password= os.environ.get("nexton_password")
-        
+        host="10.50.11.184",
+        username="nexton",
+        password=os.environ.get("nexton_password"),
     )
-    root = zarr.open_group(store=store, mode='r+')
-
+    root = zarr.open_group(store=store, mode="r+")
     animal = root.require_group(name_animal)
 
-    image_group  = animal.require_group('IMAGE')
-    d2_group = image_group.require_group('D2')
+    image_group = animal.require_group("IMAGE")
+    d2_group = image_group.require_group("D2")
 
     d2_group.create_dataset(
-        name='raw',
-        data=raw,
-        chunks=(1,) + raw.shape[1:],
-        overwrite=True
+        name="raw", data=raw, chunks=(1,) + raw.shape[1:], overwrite=True
     )
 
     d2_group.create_dataset(
-        name='label',
-        data=labels,
-        chunks=(1,) + labels.shape[1:],
-        overwrite=True
+        name="label", data=labels, chunks=(1,) + labels.shape[1:], overwrite=True
     )
-    
+
     path_animal = remote_user_dir / name_animal
     command = f"/home/nexton/miniforge-pypy3/envs/trackastra/bin/python {remote_script_path} {path_animal}"
+    print(command)
     stdin, stdout, stderr = client.exec_command(command)
 
     # Read and decode stdout/stderr while command executes
@@ -304,9 +298,15 @@ def run_remote_tracking(
     stderr_data = ""
     while not stdout.channel.exit_status_ready():
         if stdout.channel.recv_ready():
-            stdout_data += stdout.channel.recv(1024).decode("utf-8")
+            output = stdout.channel.recv(1024).decode("utf-8", errors="replace")
+            print(output, end="")
+            stdout_data += output
+            # stdout_data += stdout.channel.recv(1024).decode("utf-8")
         if stderr.channel.recv_stderr_ready():
-            stderr_data += stderr.channel.recv_stderr(1024).decode("utf-8")
+            output = stderr.channel.recv_stderr(1024).decode("utf-8", errors="replace")
+            # stderr_data += stderr.channel.recv_stderr(1024).decode("utf-8")
+            print(output, end="")
+            stderr_data += output
 
     # Get any remaining output
     stdout_data += stdout.read().decode("utf-8")
@@ -349,7 +349,8 @@ def copy_edge(edge: tuple, source: nx.DiGraph, target: nx.DiGraph, future_edge=F
 def track_greedy(
     candidate_graph: nx.DiGraph,
     allow_divisions=True,
-    threshold=0.6,
+    threshold_link=0.1,
+    threshold_division=0.5,
     edge_attr="weight",
 ):
     solution_graph = nx.DiGraph()
@@ -374,6 +375,9 @@ def track_greedy(
     ):
         for edge in tqdm(edges, desc="Processing edges"):
             node_in, node_out, features = edge
+            # x,y = graph.nodes[node_in]["coords"]
+            # t = graph.nodes[node_in]["time"]
+            # prob = div_raw[t,x,y]
             wt = features[edge_attr]
             t_out = node_out[0]
             t_in = node_in[0]
@@ -396,28 +400,39 @@ def track_greedy(
                 else 0
             )
 
-            if delta_t == 1:
-                if wt < threshold:
-                    break
-                if node_out in solution_graph.nodes and number_incoming_edges > 0:
-                    # target node already has an incoming edge
+            if number_incoming_edges > 0:
                     continue
 
-                if node_in in solution_graph and number_outgoing_edges >= (
-                    2 if allow_divisions else 1
-                ):
-                    # parent node already has max number of outgoing edges
+            if delta_t == 1:
+                
+                if number_incoming_edges > 0:
                     continue
+                elif number_outgoing_edges == 1:
+                    if allow_divisions:
+                        threshold = threshold_division
+                        if wt < threshold:
+                            continue
+                    else:
+                        continue
+                else:
+                    threshold = threshold_link
+                    if wt < threshold:
+                        break
+
                 future_edge = False
-            else:
-                if wt < threshold:  # / 2:
+            elif delta_t > 1:
+                if wt < threshold_link:  # / 2:
                     break
-                if node_out in solution_graph and number_incoming_edges > 0:
+                if number_incoming_edges > 0:
                     continue
 
                 future_edge = True
 
             copy_edge(edge, candidate_graph, solution_graph, future_edge=future_edge)
+
+    for node in candidate_graph.nodes:
+        if node not in solution_graph:
+            solution_graph.add_node(node)
 
     return solution_graph
 
@@ -456,7 +471,6 @@ def prediction_to_graph(predictions, labels):
             future_edge=False if source_key[0] == target_key[0] - 1 else True,
         )
     for frame in tqdm(range(labels.shape[0]), desc="Adding nodes not in predictions"):
-      
         for label in np.unique(labels[frame]):
             if label != 0 and (frame, label) not in graph.nodes:
                 graph.add_node(
@@ -517,219 +531,298 @@ def count_predecessors(graph, node, limit=2):
     return pred_count
 
 
-def nodes_to_event(graph):
-    # Find nodes with 2 successors where either:
-    # 1. One successor has no successors
-    # 2. One successor has 2 successors
-    # 3. Node has no successors and no predecessors
-    # 4. Node has more than 2 successors
-    # 5. Node has no direct successors but has successors in the next time frame
-    # 6. Node has no successors and not enough predecessors
-    # 7. Node has no successors but one of its predecessors has more than 
-    #    1 succesor at an other timepoint
-    nodes_to_plot_case_1 = []
-    nodes_to_plot_case_2 = []
-    nodes_to_plot_case_3 = []
-    nodes_to_plot_case_4 = []
-    nodes_to_plot_case_5 = []
-    nodes_to_plot_case_6 = []
-    nodes_to_plot_case_7 = []
-    nodes_to_plot_case_8 = []
-    fake_divisions = []
-    delamination = []
-    new_cells = []
-    divisions = []
-    past_frauds = []
+@dataclass
+class TrackingEvent:  # "division", "fake_fusion", "delamination", etc.
+    nodes: List[Tuple[int, str]]  # liste de (frame, label) concernés
+    predecessors: Optional[List[Tuple[int, str]]] = None
+    successors: Optional[List[Tuple[int, str]]] = None  # pour fake_fusion, par ex.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def nodes_to_event_2(graph, depth_frames=10):
+    events: Dict[str, List[TrackingEvent]] = defaultdict(list)
     number_of_predecesor_for_delamination = 4
     max_time = max(node[0] for node in graph.nodes())
+    remaining = set(graph.nodes())
+    division_attributes = {}
+    error_attributes = {}
+    new_attributes = {}
+    delamination_attributes = {}
 
-    for node in tqdm(graph.nodes()):
+    for node in tqdm(graph.nodes(), desc="treating nodes"):
+        if node not in remaining:
+            continue
+        node_time = node[0]
         successors = get_direct_successors(graph, node)
         predecessors = get_direct_predecessors(graph, node)
+        indirect_predecessors = list(graph.predecessors(node))
+        indirect_successors = list(graph.successors(node))
+        has_indirect_predecessors = len(indirect_predecessors) > 0
+        has_indirect_successors = len(indirect_successors) > 0
 
-        if (len(successors) == 0) and (len(predecessors)==1):
-            if node[0] < max_time:
-                predecessor = predecessors[0]
-                predecessor_successors = get_direct_successors(graph,predecessor)
-                if len(predecessor_successors)==2:
-                    fake_divisions.append(predecessor_successors)
+        if len(successors) == 2:
+            valid_division = True
+            successors_1_predecessors = list(graph.predecessors(successors[0]))
+            successors_2_predecessors = list(graph.predecessors(successors[1]))
 
-
-        # Case 4: Node has more than 2 successors
-        if len(successors) > 2:
-            nodes_to_plot_case_4.append(node)
-            if len(predecessors) > 0:
-                past_frauds.append(predecessors[0])
-
-        elif len(successors) == 2:
-            is_division = True
-            
-            if node[0] == max_time - 1:
-                divisions.append(node)
-                continue
-
-            for successor in successors:
-                successor_successors = get_direct_successors(graph, successor)
-
-                if len(predecessors) == 1:
-                    middle = predecessors[0]
-                    predecessors_predecessors = get_direct_predecessors(graph, middle)
-                    if len(predecessors_predecessors)==2:
-                        nodes_to_plot_case_8.append(node)
-                        # si tu veux suivre le passé frauduleux :
-                        past_frauds.append(predecessors[0])
-                        continue
-
-                # Case 1: One successor has no successors
-                if len(successor_successors) == 0:
-                    nodes_to_plot_case_1.append(node)
-                    if len(predecessors) > 0:
-                        past_frauds.append(predecessors[0])
-                    is_division = False
+            one_cell_frames = [node]
+            for depth in range(1, depth_frames + 1):
+                if (node_time - depth) < 0:
                     break
-
-
-                # Case 2: One successor has 2 successors
-                elif len(successor_successors) == 2:
-                    nodes_to_plot_case_2.append(node)
-                    if len(predecessors) > 0:
-                        past_frauds.append(predecessors[0])
-                    is_division = False
-                    break
-                else:
-                    if node[0] == max_time -2:
-                        continue
-                    for succ in successor_successors:
-                        future_successors = get_direct_successors(graph, succ)
-                        if len(future_successors) == 0:
-                            nodes_to_plot_case_5.append(node)
-                            is_division = False
+                node_pred_1 = [
+                    (t, label)
+                    for t, label in successors_1_predecessors
+                    if t == node_time - depth
+                ]
+                node_pred_2 = [
+                    (t, label)
+                    for t, label in successors_2_predecessors
+                    if t == node_time - depth
+                ]
+                if (len(node_pred_1) == 1) and (len(node_pred_2) == 1):
+                    if node_pred_1[0] != node_pred_2[0]:
+                        if (
+                            len(get_direct_successors(graph, node_pred_1[0])) == 0
+                            or len(get_direct_successors(graph, node_pred_2[0])) == 0
+                        ):
+                            events["fake_fusion"].append(
+                                TrackingEvent(
+                                    nodes=one_cell_frames,
+                                    predecessors=[node_pred_1[0], node_pred_2[0]],
+                                )
+                            )
+                            for one_cell in one_cell_frames:
+                                remaining.discard(one_cell)
+                                error_attributes[one_cell] = 1
+                            remaining.discard(node_pred_1[0])
+                            remaining.discard(node_pred_2[0])
+                            valid_division = False
                             break
+                        else:
+                            one_cell_frames.append(node_pred_1[0])
+                    else:
+                        one_cell_frames.append(node_pred_1[0])
+                elif len(node_pred_1 + node_pred_2) == 1:
+                    node_pred = node_pred_1 + node_pred_2
+                    one_cell_frames.append(node_pred[0])
 
-            if is_division:
-                divisions.append(node)
-        
-        # Case 5: Node has no direct successors but has successors in next frame
-        elif len(successors) == 0 and len(list(graph.successors(node))) > 0:
-            nodes_to_plot_case_5.append(node)
-            if len(predecessors) > 0:
-                past_frauds.append(predecessors[0])
-
-        # Case 3: Node has no connections
-        elif len(successors) == 0 and len(predecessors) == 0:
-            nodes_to_plot_case_3.append(node)
-            if len(predecessors) > 0:
-                past_frauds.append(predecessors[0])
-
-        # Delamination: Node has no successors
-        elif len(successors) == 0 and node[0] < max_time:
-            has_indirect_successors = len(list(graph.successors(node))) > 0
-            number_of_pred = count_predecessors(
-                graph, node, limit=number_of_predecesor_for_delamination
-            )
-            if number_of_pred < number_of_predecesor_for_delamination:
-                nodes_to_plot_case_6.append(node)
-                if predecessors:
-                    past_frauds.append(predecessors[0])
-            elif has_indirect_successors:
-                delamination.append(node)
-                successors_of_predecessors = graph.graph(predecessors[0])
-                for successor in successors_of_predecessors:
-                    if successor[0] == node[0]:
+            # Each successor has a valid lineage of 1 successor in the next n frames
+            if valid_division:
+                node_successors = successors
+                divisions_frames = [successors]
+                for depth in range(depth_frames):
+                    if node_time + 1 + depth >= max_time:
+                        break
+                    next_successors = []
+                    for succ in node_successors:
+                        successors_successor = get_direct_successors(graph, succ)
+                        if len(successors_successor) == 1:
+                            next_successors.append(successors_successor[0])
+                    if len(next_successors) == 1:
+                        one_cell_frames = [next_successors[0]]
+                        solo_next_successors_fusion = next_successors[0]
+                        for depth_fusion in range(depth_frames):
+                            if solo_next_successors_fusion[0] >= max_time:
+                                break
+                            next_successors_fusion = get_direct_successors(
+                                graph, solo_next_successors_fusion
+                            )
+                            if len(next_successors_fusion) == 2:
+                                events["fake_fusion"].append(
+                                    TrackingEvent(
+                                        nodes=one_cell_frames,
+                                        predecessors=divisions_frames[-1],
+                                    )
+                                )
+                                for one_cell in one_cell_frames:
+                                    remaining.discard(one_cell)
+                                    error_attributes[one_cell] = 1
+                                remaining.discard(next_successors_fusion[0])
+                                remaining.discard(next_successors_fusion[1])
+                                remaining.discard(divisions_frames[-1][0])
+                                remaining.discard(divisions_frames[-1][1])
+                                break
+                            elif len(next_successors_fusion) == 0:
+                                events["dying_successors"].append(
+                                    TrackingEvent(nodes=[node])
+                                )
+                                error_attributes[node] = 3
+                                valid_division = False
+                                break
+                            solo_next_successors_fusion = next_successors_fusion[0]
+                            one_cell_frames.append(solo_next_successors_fusion)
+                        else:
+                            events["fake_division"].append(
+                                TrackingEvent(
+                                    nodes=divisions_frames,
+                                    predecessors=[node],
+                                    successors=one_cell_frames,
+                                )
+                            )
+                            for one_cell in one_cell_frames:
+                                remaining.discard(one_cell)
+                            remaining.discard(node)
+                            for two_cells in divisions_frames:
+                                remaining.discard(two_cells[0])
+                                remaining.discard(two_cells[1])
+                                error_attributes[two_cells[0]]=2
+                                error_attributes[two_cells[1]]=2
+                            valid_division = False
+                        break
+                    elif len(next_successors) == 0:
+                        valid_division = False
+                        events["dying_successors"].append(TrackingEvent(nodes=[node]))
+                        error_attributes[node] = 3
+                        break
+                    else:
+                        divisions_frames.append(next_successors)
+                        node_successors = next_successors
                         continue
-                    if graph.edges[(predecessors[0], successor)]["weight"] > 0.6:
-                        nodes_to_plot_case_7.append(node)
-                        if predecessors:
-                            past_frauds.append(predecessors[0])
-                else:
-                    if predecessors[0] not in nodes_to_plot_case_1:
-                        delamination.append(node)
-            else:
-                if predecessors[0] not in (
-                    nodes_to_plot_case_7
-                    + nodes_to_plot_case_6
-                    + nodes_to_plot_case_4
-                    + nodes_to_plot_case_5
-                    + nodes_to_plot_case_3
-                    + nodes_to_plot_case_1
-                    + nodes_to_plot_case_2
-                ):
-                    delamination.append(node)
-        # New cells: Node has no predecessors
-        elif len(predecessors) == 0 and node[0] > 0:
-            new_cells.append(node)
 
-        # Division cases
+            if valid_division:
+                events["division"].append(TrackingEvent(nodes=[node]))
+                remaining.discard(node)
+                division_attributes[successors[0]] = True
+                division_attributes[successors[1]] = True
+                # divisions.append(node)
 
-    fraud_nodes = (
-        nodes_to_plot_case_7
-        + nodes_to_plot_case_6
-        + nodes_to_plot_case_4
-        + nodes_to_plot_case_5
-        + nodes_to_plot_case_3
-        + nodes_to_plot_case_1
-        + nodes_to_plot_case_2
-    )
-
-    return {
-        "divisions": divisions,
-        "delamination": delamination,
-        "new_cells": new_cells,
-        "frauds": fraud_nodes,
-        "past_frauds": past_frauds,
-        "fake_divisions": fake_divisions
-    }
-
-
-def label_events(cell_lineage, labels):
-    events = nodes_to_event(cell_lineage)
-    events_labels = defaultdict(lambda: np.zeros_like(labels))
-
-    # Create boolean mask for all nodes at once
-    for event_name, event_nodes in events.items():
-        time_coords = np.array([node[0] for node in event_nodes])
-
-        label_values = np.array([node[1] for node in event_nodes])
-        # Use vectorized operations
-        for t in tqdm(np.unique(time_coords), total=len(np.unique(time_coords))):
-            t_mask = time_coords == t
-            t_labels = label_values[t_mask]
-            mask = np.isin(labels[t], t_labels)
-            events_labels[event_name][t][mask] = 1
-
-
-    return events, events_labels
-
-def label_fake_div(cell_lineage, labels):
-    events = get_fake_division(cell_lineage)
-    events_labels = np.zeros_like(labels)
-    # Create boolean mask for all nodes at once
-    for nodes in events:
-        time_coords = np.array([node[0] for node in nodes])
-
-        label_values = np.array([node[1] for node in nodes])
-        # Use vectorized operations
-        for t in tqdm(np.unique(time_coords), total=len(np.unique(time_coords))):
-            t_mask = time_coords == t
-            t_labels = label_values[t_mask]
-            mask = np.isin(labels[t], t_labels)
-            events_labels[t][mask] = 1        
-    return events, events_labels
-
-def get_fake_division(graph):
-    max_time = max(node[0] for node in graph.nodes())
-    fake_divisions = []
-    for node in tqdm(graph.nodes()):
+    for node in tqdm(remaining, desc="treating remaining nodes"):
+        # if node not in remaining:
+        #     continue
+        node_time = node[0]
         successors = get_direct_successors(graph, node)
+        predecessors = get_direct_predecessors(graph, node)
+        indirect_predecessors = list(graph.predecessors(node))
+        indirect_successors = list(graph.successors(node))
+        has_indirect_predecessors = len(indirect_predecessors) > 0
+        has_indirect_successors = len(indirect_successors) > 0
 
-        if node[0] < max_time-1:
-            if (len(successors) == 2):
-                    successors_1 = get_direct_successors(graph,successors[0])
-                    successors_2 = get_direct_successors(graph,successors[1])
-                    if len(successors_1 + successors_2)==1:
-                        fake_divisions.append([successors[0], successors[1]])
+        if len(successors) == 0:
+            # Case: Node has no connections
+            if (not has_indirect_predecessors) and (not has_indirect_successors):
+                events["no_lineage"].append(TrackingEvent(nodes=[node]))
+                error_attributes[node]=4
+
+            # Delamination: Node has no successors
+            elif node_time != max_time:
+                number_of_pred = count_predecessors(
+                    graph, node, limit=number_of_predecesor_for_delamination
+                )
+                if number_of_pred < number_of_predecesor_for_delamination:
+                    # dying_cells.append(node)
+                    events["dying_cell"].append(TrackingEvent(nodes=[node]))
+                    error_attributes[node]=5
+
+                else:
+                    if has_indirect_successors:
+                        # delamination.append(node)
+                        successors_of_predecessors = list(
+                            graph.successors(predecessors[0])
+                        )
+                        for successor in successors_of_predecessors:
+                            if successor[0] == node[0]:
+                                continue
+                            if (
+                                graph.edges[(predecessors[0], successor)]["weight"]
+                                > 0.6
+                            ):
+                                events["missed_successor"].append(
+                                    TrackingEvent(nodes=[node], successors=[successor])
+                                )
+                                error_attributes[node]=6
+                        else:
+                            events["delamination"].append(TrackingEvent(nodes=[node]))
+                            delamination_attributes[node]=True
+                    else:
+                        events["delamination"].append(TrackingEvent(nodes=[node]))
+                        delamination_attributes[node]=True
+
+        elif (node_time != 0) and (not has_indirect_predecessors):
+            events["new_cell"].append(TrackingEvent(nodes=[node]))
+            new_attributes[node]=True
+
+    nx.set_node_attributes(graph, division_attributes, 'is_division')
+    nx.set_node_attributes(graph, new_attributes, 'is_new')
+    nx.set_node_attributes(graph, delamination_attributes, 'is_delamination')
+    nx.set_node_attributes(graph, error_attributes, 'is_error')
+
+    return graph, events
 
 
-    return fake_divisions
+def label_events(cell_lineage, labels, depth_frames):
+    graph, events = nodes_to_event_2(cell_lineage, depth_frames)
+    # events_labels = {name: np.zeros_like(labels) for name in events}
+    # events_labels = defaultdict(lambda: np.zeros_like(labels))
 
+    # for event_name, ev_list in events.items():
+    #     print(len(ev_list))
+    #     times = []
+    #     labs = []
+    #     for ev in ev_list:
+    #         seq = (
+    #             ev.nodes
+    #             if event_name != "fake_division"
+    #             else [node for pair in ev.nodes for node in pair]
+    #         )
+    #         for t, lab in seq:
+    #             times.append(t)
+    #             labs.append(lab)
 
+    #     if not times:
+    #         continue
+
+    #     times = np.array(times)
+    #     labs = np.array(labs)
+
+    #     mask_event = np.zeros_like(labels, dtype=np.uint8)
+
+    #     for t in tqdm(np.unique(times), desc=event_name):
+    #         mask_labels = np.isin(labels[t], labs[times == t])
+    #         mask_event[t, mask_labels] = 1
+    #         edges = find_boundaries(mask_event[t])
+    #         structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+    #         fine_edges = binary_dilation(edges, structure)
+    #         events_labels[event_name][t, fine_edges] = 1
+
+    #     # Libération de la mémoire
+    #     del times, labs, mask_event
+
+    mask_all = np.zeros_like(labels, dtype=np.uint8)
+    codes = {name: idx for idx, name in enumerate(events, start=1)}
+
+    for event_name, ev_list in events.items():
+        code = codes[event_name]
+        # … calcule mask_frame …
+        
+        times = []
+        labs = []
+        print(f"Number of {event_name}: {len(ev_list)}")
+
+        for ev in ev_list:
+            seq = (
+                ev.nodes
+                if event_name != "fake_division"
+                else [node for pair in ev.nodes for node in pair]
+            )
+            for t, lab in seq:
+                times.append(t)
+                labs.append(lab)
+
+        if not times:
+            continue
+
+        times = np.array(times)
+        labs = np.array(labs)
+
+        for t in tqdm(np.unique(times), desc=f"Labelling {event_name}"):
+            mask_labels = np.isin(labels[t], labs[times == t])
+            mask_frame = np.zeros_like(labels[t], dtype=np.uint8)
+            mask_frame[mask_labels] = 1
+            mask_all[t][mask_frame > 0] = code
+            # events_labels[event_name][t] = mask_frame
+
+        del times, labs
+
+    return graph, events, mask_all
+
+    # return events, events_labels
