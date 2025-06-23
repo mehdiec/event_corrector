@@ -234,23 +234,23 @@ def track_greedy(
 ):
     solution_graph = nx.DiGraph()
     # Group edges by their frame distance
-    edges_by_dt = {}
+    edges_by_distance = {}
     for edge in tqdm(
         candidate_graph.edges(data=True), desc="Grouping edges by distance"
     ):
-        delta_t = edge[1][0] - edge[0][0]  # Frame distance between source and target
-        if delta_t not in edges_by_dt:
-            edges_by_dt[delta_t] = []
-        edges_by_dt[delta_t].append(edge)
+        distance = edge[1][0] - edge[0][0]  # Frame distance between source and target
+        if distance not in edges_by_distance:
+            edges_by_distance[distance] = []
+        edges_by_distance[distance].append(edge)
 
     # Sort each group by weight and combine into final list
-    edges_by_dt = {
+    edges_by_distance = {
         k: sorted(v, key=lambda e: e[2]["weight"], reverse=True)
-        for k, v in edges_by_dt.items()
+        for k, v in edges_by_distance.items()
     }
 
-    for delta_t, edges in tqdm(
-        edges_by_dt.items(), desc="Processing edges by distance"
+    for distance, edges in tqdm(
+        edges_by_distance.items(), desc="Processing edges by distance"
     ):
         for edge in tqdm(edges, desc="Processing edges"):
             node_in, node_out, features = edge
@@ -261,7 +261,7 @@ def track_greedy(
                 sum(
                     1
                     for pred in solution_graph.predecessors(node_out)
-                    if t_out - pred[0] == delta_t
+                    if t_out - pred[0] == distance
                 )
                 if node_out in solution_graph
                 else 0
@@ -270,13 +270,13 @@ def track_greedy(
                 sum(
                     1
                     for succ in solution_graph.successors(node_in)
-                    if succ[0] - t_in == delta_t
+                    if succ[0] - t_in == distance
                 )
                 if node_in in solution_graph
                 else 0
             )
 
-            if delta_t == 1:
+            if distance == 1:
                 if wt < threshold:
                     break
                 if node_out in solution_graph.nodes and number_incoming_edges > 0:
@@ -405,8 +405,7 @@ def nodes_to_event(graph):
     # 4. Node has more than 2 successors
     # 5. Node has no direct successors but has successors in the next time frame
     # 6. Node has no successors and not enough predecessors
-    # 7. Node has no successors but one of its predecessors has more than 
-    #    1 succesor at an other timepoint
+    # 7. Node has no successors but one of its predecessors has more than 1 succesor at an other timepoint
     nodes_to_plot_case_1 = []
     nodes_to_plot_case_2 = []
     nodes_to_plot_case_3 = []

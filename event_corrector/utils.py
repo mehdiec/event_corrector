@@ -1,30 +1,56 @@
 import numpy as np
 import skimage
-from scipy.ndimage import convolve, find_objects
+from scipy.ndimage import convolve
 from skimage.morphology import skeletonize
 import networkx as nx
 import matplotlib.pyplot as plt
 
 
-def get_bounding_box_from_coords(coords):
-    """
-    Calculates the bounding box coordinates for a given list of coordinates.
+def get_bounding_box_from_coord(coord, shape, bounding_box = 50):
+    y_coord, x_coord = coord
+    h,w = shape
+    y_min, y_max = max(0,y_coord - bounding_box), min(h-1,y_coord+bounding_box)
+    x_min, x_max = max(0,x_coord - bounding_box), min(w-1,x_coord+bounding_box)
 
-    Parameters
-    ----------
-    coords : List[Tuple[int, int]]
-        List of (y, x) coordinate tuples.
+    return int(y_min), int(y_max), int(x_min), int(x_max)
+
+def get_bounding_box_from_coords(coords, shape, bounding_box = 50):
+    y_coords, x_coords = coords[0], coords[1]
+    h,w = shape
+    y_min_coords, y_max_coords = min(y_coords), max(y_coords)
+    x_min_coords, x_max_coords = min(x_coords), max(x_coords)
+
+    y_min, y_max = max(0,y_min_coords - bounding_box), min(h-1,y_max_coords+bounding_box)
+    x_min, x_max = max(0,x_min_coords - bounding_box), min(w-1,x_max_coords+bounding_box)
+
+    return int(y_min), int(y_max), int(x_min), int(x_max)
+
+def get_bounding_box_from_labels(labels, touched_labels):
+    print("from labels")
+    """
+    Calculates the bounding box coordinates for a given list of labels.
 
     Returns
     -------
     Tuple[int, int, int, int]
         Tuple containing the (y_min, y_max, x_min, x_max) values of the bounding box.
     """
-    y_coords, x_coords = coords[0], coords[1]
-    y_min, y_max = min(y_coords), max(y_coords)
-    x_min, x_max = min(x_coords), max(x_coords)
+    
 
-    return int(y_min), int(y_max), int(x_min), int(x_max)
+    if (labels is not None) and (touched_labels is not None):
+        
+        y_coords = []
+        x_coords = []
+        for label in touched_labels:
+            label_mask = labels == label
+            label_coords = np.where(label_mask)
+            y_coords.extend(label_coords[0])
+            x_coords.extend(label_coords[1])
+                
+        y_min, y_max = min(y_coords), max(y_coords)
+        x_min, x_max = min(x_coords), max(x_coords)
+        
+        return int(y_min), int(y_max), int(x_min), int(x_max)
 
 
 def prune_skeleton(skel: np.ndarray, max_iter: int = 100) -> np.ndarray:
@@ -51,7 +77,6 @@ def prune_skeleton(skel: np.ndarray, max_iter: int = 100) -> np.ndarray:
 
     return skel
 
-
 def masks_to_outlines(masks: np.ndarray) -> np.ndarray:
     """Convert label masks to binary outlines.
 
@@ -68,7 +93,7 @@ def masks_to_outlines(masks: np.ndarray) -> np.ndarray:
         raise ValueError(
             f"masks_to_outlines takes 2D or 3D array, not {masks.ndim}D array"
         )
-
+    print(masks.shape)
     outlines = np.zeros(masks.shape, bool)
 
     if masks.ndim == 3:
@@ -78,7 +103,7 @@ def masks_to_outlines(masks: np.ndarray) -> np.ndarray:
 
     # Use skimage.segmentation.find_boundaries to get outlines
     outlines = skimage.segmentation.find_boundaries(masks, mode="outer", background=0)
-    outlines = skimage.morphology.remove_small_holes(outlines, 10)
+    # outlines = skimage.morphology.remove_small_holes(outlines, 10)
     return outlines
 
 
@@ -311,3 +336,5 @@ def plot_subgraph(
     ax.axis("off")
     
     return fig, ax
+
+
