@@ -46,6 +46,9 @@ class EventCorrector:
             symbol="disc",
         )
 
+        # Load previously saved points if they exist
+        self._load_existing_corrections()
+
         # Connect event handlers for data changes on the new points layers
         self.corrected_apoptosis_pts_layer.events.data.connect(
             self._on_corrected_apoptosis_data_change
@@ -54,6 +57,60 @@ class EventCorrector:
             self._on_corrected_divisions_data_change
         )
         print("EventCorrector: Event handlers connected.")  # Debug print
+
+    def _load_existing_corrections(self):
+        """Load previously saved corrections from CSV files if they exist."""
+        # Load apoptosis corrections
+        apoptosis_data = self._load_points_from_csv("apoptosis_correction.csv")
+        if apoptosis_data is not None and len(apoptosis_data) > 0:
+            self.corrected_apoptosis_pts_layer.data = apoptosis_data
+            self._update_point_symbols(
+                self.corrected_apoptosis_pts_layer, self.apoptosis_layer
+            )
+            print(
+                f"EventCorrector: Loaded {len(apoptosis_data)} apoptosis corrections."
+            )
+
+        # Load divisions corrections
+        divisions_data = self._load_points_from_csv("divisions_correction.csv")
+        if divisions_data is not None and len(divisions_data) > 0:
+            self.corrected_divisions_pts_layer.data = divisions_data
+            self._update_point_symbols(
+                self.corrected_divisions_pts_layer, self.divisions_layer
+            )
+            print(
+                f"EventCorrector: Loaded {len(divisions_data)} divisions corrections."
+            )
+
+    def _load_points_from_csv(self, filename):
+        """Loads 3D points data from a CSV file.
+
+        Returns the points data as a numpy array, or None if file doesn't exist.
+        """
+        # Get the same path logic as used in _save_points_to_csv
+        store_filesystem_path = self.animal.store.path
+        parent_dir_of_store = os.path.dirname(store_filesystem_path)
+        load_path = os.path.join(
+            parent_dir_of_store, self.animal.attrs["name"], filename
+        )
+
+        if not os.path.exists(load_path):
+            return None
+
+        points_data = []
+        with open(load_path, "r", newline="") as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader, None)  # Skip header
+
+            for row in reader:
+                if len(row) == 3:
+                    point = [float(row[0]), float(row[1]), float(row[2])]
+                    points_data.append(point)
+
+        if points_data:
+            return np.array(points_data)
+        else:
+            return None
 
     def _save_points_to_csv(self, points_layer, filename):
         """Saves 3D points data from a layer to a CSV file.
