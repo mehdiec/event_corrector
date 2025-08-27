@@ -91,14 +91,15 @@ class CellTracker:
 
 
     def visualize_tracking_events(self, cell_lineage, labels, depth_frames):
-        self.relabeled_stuff = relabel_image(labels, cell_lineage)
-        print("Relabelling done")
+        # self.relabeled_stuff = relabel_image(labels, cell_lineage)
+        # print("Relabelling done")
 
         events_graph, self.event, self.event_dictionnary = label_events(
             cell_lineage, labels, depth_frames
         )
 
-        return events_graph, self.relabeled_stuff, self.event_dictionnary
+        # return events_graph, self.relabeled_stuff, self.event_dictionnary
+        return events_graph, None, self.event_dictionnary
 
 
 def assign_lineage_ids(graph, all_nodes):
@@ -425,6 +426,8 @@ def track_greedy(
                     break
                 if number_incoming_edges > 0:
                     continue
+                if number_outgoing_edges >=2:
+                    continue
 
                 future_edge = True
 
@@ -435,6 +438,7 @@ def track_greedy(
             solution_graph.add_node(node)
 
     return solution_graph
+
 
 
 def prediction_to_graph(predictions, labels):
@@ -548,8 +552,9 @@ def nodes_to_event_2(graph, depth_frames=10):
     error_attributes = {}
     new_attributes = {}
     delamination_attributes = {}
+    sorted_nodes = sorted(graph.nodes(), key=lambda x: x[0])
 
-    for node in tqdm(graph.nodes(), desc="treating nodes"):
+    for node in tqdm(sorted_nodes, desc="treating nodes"):
         if node not in remaining:
             continue
         node_time = node[0]
@@ -581,6 +586,7 @@ def nodes_to_event_2(graph, depth_frames=10):
                 ]
                 if (len(node_pred_1) == 1) and (len(node_pred_2) == 1):
                     if node_pred_1[0] != node_pred_2[0]:
+
                         if (
                             len(get_direct_successors(graph, node_pred_1[0])) == 0
                             or len(get_direct_successors(graph, node_pred_2[0])) == 0
@@ -602,9 +608,12 @@ def nodes_to_event_2(graph, depth_frames=10):
                             one_cell_frames.append(node_pred_1[0])
                     else:
                         one_cell_frames.append(node_pred_1[0])
+
+                        
                 elif len(node_pred_1 + node_pred_2) == 1:
                     node_pred = node_pred_1 + node_pred_2
                     one_cell_frames.append(node_pred[0])
+
 
             # Each successor has a valid lineage of 1 successor in the next n frames
             if valid_division:
@@ -616,8 +625,24 @@ def nodes_to_event_2(graph, depth_frames=10):
                     next_successors = []
                     for succ in node_successors:
                         successors_successor = get_direct_successors(graph, succ)
-                        if len(successors_successor) == 1:
-                            next_successors.append(successors_successor[0])
+                        if len(successors_successor)==2:
+                            valid_division = False
+                            events["chained_divisions"].append(TrackingEvent(nodes=[node], successors=(successors)))
+                            remaining.discard(node)
+                            remaining.discard(successors[0])
+                            remaining.discard(successors[1])
+                            error_attributes[node] = 7
+                            for succ in node_successors:
+                                successors_chained = get_direct_successors(graph,succ)
+                                if len(successors_chained)==2:
+                                    remaining.discard(node)
+                                    remaining.discard(successors_chained[0])
+                                    remaining.discard(successors_chained[1])
+                                    events["chained_divisions"].append(TrackingEvent(nodes=[succ], successors=successors_chained))
+                                    error_attributes[succ] = 7
+                            break
+                        else:
+                            next_successors += list(successors_successor)
                     if len(next_successors) == 1:
                         one_cell_frames = [next_successors[0]]
                         solo_next_successors_fusion = next_successors[0]
@@ -674,21 +699,35 @@ def nodes_to_event_2(graph, depth_frames=10):
                         events["dying_successors"].append(TrackingEvent(nodes=[node]))
                         error_attributes[node] = 3
                         break
+                    elif len(next_successors) > 2:
+                        valid_division = False
+                        events["chained_divisions"].append(TrackingEvent(nodes=[node], successors=(successors)))
+                        remaining.discard(node)
+                        remaining.discard(successors[0])
+                        remaining.discard(successors[1])
+                        error_attributes[node] = 7
+                        for succ in node_successors:
+                            successors_chained = get_direct_successors(graph,succ)
+                            if len(successors_chained)==2:
+                                remaining.discard(node)
+                                remaining.discard(successors_chained[0])
+                                remaining.discard(successors_chained[1])
+                                events["chained_divisions"].append(TrackingEvent(nodes=[succ], successors=successors_chained))
+                                error_attributes[node] = 7
+
                     else:
                         divisions_frames.append(next_successors)
                         node_successors = next_successors
                         continue
 
             if valid_division:
-                events["division"].append(TrackingEvent(nodes=[node]))
+                events["division"].append(TrackingEvent(nodes=[node], successors=successors))
                 remaining.discard(node)
-                division_attributes[successors[0]] = True
-                division_attributes[successors[1]] = True
-                # divisions.append(node)
+                remaining.discard(successors[0])
+                remaining.discard(successors[1])
+                division_attributes[node] = True
 
     for node in tqdm(remaining, desc="treating remaining nodes"):
-        # if node not in remaining:
-        #     continue
         node_time = node[0]
         successors = get_direct_successors(graph, node)
         predecessors = get_direct_predecessors(graph, node)
@@ -698,27 +737,16 @@ def nodes_to_event_2(graph, depth_frames=10):
         has_indirect_successors = len(indirect_successors) > 0
 
         if len(successors) == 0:
-            # Case: Node has no connections
             if (not has_indirect_predecessors) and (not has_indirect_successors):
                 events["no_lineage"].append(TrackingEvent(nodes=[node]))
                 error_attributes[node]=4
 
-            # Delamination: Node has no successors
             elif node_time != max_time:
-                number_of_pred = count_predecessors(
-                    graph, node, limit=number_of_predecesor_for_delamination
-                )
-                if number_of_pred < number_of_predecesor_for_delamination:
-                    # dying_cells.append(node)
-                    events["dying_cell"].append(TrackingEvent(nodes=[node]))
-                    error_attributes[node]=5
-
-                else:
-                    if has_indirect_successors:
-                        # delamination.append(node)
+                if (not has_indirect_successors):
+                    if len(predecessors)>0:
                         successors_of_predecessors = list(
-                            graph.successors(predecessors[0])
-                        )
+                                graph.successors(predecessors[0])
+                            )
                         for successor in successors_of_predecessors:
                             if successor[0] == node[0]:
                                 continue
@@ -730,12 +758,28 @@ def nodes_to_event_2(graph, depth_frames=10):
                                     TrackingEvent(nodes=[node], successors=[successor])
                                 )
                                 error_attributes[node]=6
-                        else:
-                            events["delamination"].append(TrackingEvent(nodes=[node]))
-                            delamination_attributes[node]=True
-                    else:
-                        events["delamination"].append(TrackingEvent(nodes=[node]))
-                        delamination_attributes[node]=True
+                        else:        
+                            number_of_pred = count_predecessors(
+                                graph, node, limit=number_of_predecesor_for_delamination
+                            )
+                            if number_of_pred < number_of_predecesor_for_delamination:
+                                if node_time - number_of_pred >=0:
+                                    events["dying_cell"].append(TrackingEvent(nodes=[node]))
+                                    error_attributes[node]=5
+                            else:
+                                events["delamination"].append(TrackingEvent(nodes=[node]))
+                                delamination_attributes[node]=True
+
+                else:
+                    for successor in indirect_successors:
+                        if successor[0] == node[0]:
+                            continue
+                        events["missed_successor"].append(
+                                    TrackingEvent(nodes=[node])
+                                )
+                        error_attributes[node]=6
+
+                       
 
         elif (node_time != 0) and (not has_indirect_predecessors):
             events["new_cell"].append(TrackingEvent(nodes=[node]))
@@ -751,45 +795,10 @@ def nodes_to_event_2(graph, depth_frames=10):
 
 def label_events(cell_lineage, labels, depth_frames):
     graph, events = nodes_to_event_2(cell_lineage, depth_frames)
-    # events_labels = {name: np.zeros_like(labels) for name in events}
-    # events_labels = defaultdict(lambda: np.zeros_like(labels))
-
-    # for event_name, ev_list in events.items():
-    #     print(len(ev_list))
-    #     times = []
-    #     labs = []
-    #     for ev in ev_list:
-    #         seq = (
-    #             ev.nodes
-    #             if event_name != "fake_division"
-    #             else [node for pair in ev.nodes for node in pair]
-    #         )
-    #         for t, lab in seq:
-    #             times.append(t)
-    #             labs.append(lab)
-
-    #     if not times:
-    #         continue
-
-    #     times = np.array(times)
-    #     labs = np.array(labs)
-
-    #     mask_event = np.zeros_like(labels, dtype=np.uint8)
-
-    #     for t in tqdm(np.unique(times), desc=event_name):
-    #         mask_labels = np.isin(labels[t], labs[times == t])
-    #         mask_event[t, mask_labels] = 1
-    #         edges = find_boundaries(mask_event[t])
-    #         structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
-    #         fine_edges = binary_dilation(edges, structure)
-    #         events_labels[event_name][t, fine_edges] = 1
-
-    #     # Libération de la mémoire
-    #     del times, labs, mask_event
 
     mask_all = np.zeros_like(labels, dtype=np.uint8)
     codes = {name: idx for idx, name in enumerate(events, start=1)}
-
+    print(codes)
     for event_name, ev_list in events.items():
         code = codes[event_name]
         # … calcule mask_frame …
@@ -826,3 +835,39 @@ def label_events(cell_lineage, labels, depth_frames):
     return graph, events, mask_all
 
     # return events, events_labels
+
+    # events_labels = {name: np.zeros_like(labels) for name in events}
+    # events_labels = defaultdict(lambda: np.zeros_like(labels))
+
+    # for event_name, ev_list in events.items():
+    #     print(len(ev_list))
+    #     times = []
+    #     labs = []
+    #     for ev in ev_list:
+    #         seq = (
+    #             ev.nodes
+    #             if event_name != "fake_division"
+    #             else [node for pair in ev.nodes for node in pair]
+    #         )
+    #         for t, lab in seq:
+    #             times.append(t)
+    #             labs.append(lab)
+
+    #     if not times:
+    #         continue
+
+    #     times = np.array(times)
+    #     labs = np.array(labs)
+
+    #     mask_event = np.zeros_like(labels, dtype=np.uint8)
+
+    #     for t in tqdm(np.unique(times), desc=event_name):
+    #         mask_labels = np.isin(labels[t], labs[times == t])
+    #         mask_event[t, mask_labels] = 1
+    #         edges = find_boundaries(mask_event[t])
+    #         structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+    #         fine_edges = binary_dilation(edges, structure)
+    #         events_labels[event_name][t, fine_edges] = 1
+
+    #     # Libération de la mémoire
+    #     del times, labs, mask_event
