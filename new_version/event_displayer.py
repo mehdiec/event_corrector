@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 from pyanimalprocessing.plotting import plot_property
+import zarr
 
 # I want you to update the EventCorrectorClass :
 
@@ -11,9 +12,10 @@ from pyanimalprocessing.plotting import plot_property
 
 
 class EventCorrector:
-    def __init__(self, viewer, animal):
+    def __init__(self, viewer, animal_path):
         self.viewer = viewer
-        self.animal = animal
+        self.animal = zarr.open(animal_path)
+        self.animal_name = animal_path.name
         self.self_roi_number = self.create_roi_number()
 
         self.display_layers()
@@ -91,8 +93,10 @@ class EventCorrector:
         store_filesystem_path = self.animal.store.path
         parent_dir_of_store = os.path.dirname(store_filesystem_path)
         load_path = os.path.join(
-            parent_dir_of_store, self.animal.attrs["name"], filename
+            parent_dir_of_store, self.animal_name, filename
         )
+
+        print(load_path)
 
         if not os.path.exists(load_path):
             return None
@@ -157,7 +161,7 @@ class EventCorrector:
         # e.g., if store is /path/to/data/myanimal_zarr_dir/, CSV is /path/to/data/filename.csv
         parent_dir_of_store = os.path.dirname(store_filesystem_path)
         save_path = os.path.join(
-            parent_dir_of_store, self.animal.attrs["name"], filename
+            parent_dir_of_store, self.animal_name, filename
         )
 
         # Ensure the target directory (parent_dir_of_store) exists.
