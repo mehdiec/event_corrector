@@ -2,7 +2,8 @@ import napari
 import zarr
 import networkx as nx
 import numpy as np
-import pickle, sys, json, os, pandas as pd
+import pickle, sys, json, os, pandas as pd, time
+from scipy.ndimage import mean as ndimage_mean
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox, QDoubleSpinBox, QCheckBox, QFrame, QSpinBox
 from qtpy.QtCore import Qt # type: ignore
 
@@ -58,6 +59,40 @@ except FileNotFoundError:
 except Exception as e:
     print(f"❌ Erreur lors du chargement du fichier CSV : {e}")
 
+# --- Post-traitement pour créer les masques de détection par label ---
+print("Post-traitement des détections du modèle...")
+
+# Charger les données nécessaires
+model_labels = animal.IMAGE.D2.labels_three6trackia[:]
+div_probs = animal.IMAGE.D2.division_detection[:]
+apo_probs = animal.IMAGE.D2.apoptosis_detection[:]
+
+# Initialiser les images de sortie qui contiendront les probabilités moyennes
+division_mean_prob_image = np.zeros_like(model_labels, dtype=np.float32)
+apoptosis_mean_prob_image = np.zeros_like(model_labels, dtype=np.float32)
+
+for t in range(model_labels.shape[0]):
+    labels_in_frame = model_labels[t]
+    unique_labels = np.unique(labels_in_frame)
+    unique_labels = unique_labels[unique_labels != 0] # Exclure le fond
+    # Ignorer le label 0 (fond)
+    unique_labels = unique_labels[unique_labels != 0]
+
+    if len(unique_labels) > 0:
+        # Calculer la probabilité moyenne pour chaque label
+        mean_div_probs = ndimage_mean(div_probs[t], labels=labels_in_frame, index=unique_labels)
+        mean_apo_probs = ndimage_mean(apo_probs[t], labels=labels_in_frame, index=unique_labels)
+
+        # Créer une table de correspondance (lookup table) pour mapper chaque ID de label à sa probabilité moyenne
+        # C'est une méthode très rapide pour créer l'image finale
+        max_label = np.max(unique_labels)
+        div_lut = np.zeros(max_label + 1, dtype=np.float32)
+        apo_lut = np.zeros(max_label + 1, dtype=np.float32)
+        div_lut[unique_labels] = mean_div_probs
+        apo_lut[unique_labels] = mean_apo_probs
+        # Utiliser la table de correspondance pour générer l'image de probabilité moyenne
+        division_mean_prob_image[t] = div_lut[labels_in_frame]
+        apoptosis_mean_prob_image[t] = apo_lut[labels_in_frame]
 
 # --- La classe de notre Widget Qt ---
 
@@ -553,20 +588,22 @@ viewer = napari.Viewer()
 # ... (création des couches identique)
 viewer.add_image(raw_image_zarr, name='Raw Image'); viewer.add_labels(labels_zarr, name='Segmentation Labels', visible=False)
 viewer.add_labels(animal.IMAGE.D2.labels_three6trackia, name = 'Labels from model', visible=False)
-viewer.add_image(animal.IMAGE.D2.apoptosis_detection, name = 'Apoptoses model', visible=True, blending="additive",colormap='red', contrast_limits=(0.5, 1.0))
-viewer.add_image(animal.IMAGE.D2.division_detection, name = 'Divisions model', visible=True, blending="additive", colormap='blue', contrast_limits=(0.7, 1.0))
+# viewer.add_image(animal.IMAGE.D2.apoptosis_detection, name = 'Apoptoses model', visible=True, blending="additive",colormap='red', contrast_limits=(0.5, 1.0))
+# viewer.add_image(animal.IMAGE.D2.division_detection, name = 'Divisions model', visible=True, blending="additive", colormap='blue', contrast_limits=(0.5, 1.0))
 # Ajout de la nouvelle couche de points depuis le fichier CSV
+viewer.add_image(division_mean_prob_image, name='Divisions model', colormap='blue', blending='additive', contrast_limits=[0, 1], visible=False)
+viewer.add_image(apoptosis_mean_prob_image, name='Apoptoses model', colormap='red', blending='additive', contrast_limits=[0, 1], visible=False)
 if len(division_points_csv) > 0:
     viewer.add_points(division_points_csv, name='Divisions (CSV Ref)', face_color='gold', symbol='diamond', size=15)
 viewer.add_points(np.array(division_points_ref), name='Divisions (Matlab)', face_color='cyan', size=10)
 viewer.add_points(np.array(apoptosis_points_ref), name='Apoptoses (Matlab)', face_color='lime', size=10)
-
 # Création des nouvelles couches de points pour chaque catégorie et chaque événement
 categories = {
     'TP (Accord)': ('green', 'o'), 'TP (Modèle seul)': ('blue', 'star'), 'TP (Matlab seul)': ('purple', 'diamond'),
     'FP (Modèle)': ('red', 'cross'), 'FP (Matlab)': ('magenta', '+'),
     'FN (Accord)': ('yellow', 'x')
 }
+
 for event in ["Divisions", "Apoptoses"]:
     for name, (color, symbol) in categories.items(): # Utilise les nouvelles catégories
         viewer.add_points(ndim=3, name=f'{name} {event}', face_color=color, symbol=symbol, size=10)
